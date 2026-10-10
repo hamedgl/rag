@@ -42,9 +42,29 @@ Reply with the query only.
 Question: {question}""")]) | llm | StrOutputParser()
 
 
+condense_chain = ChatPromptTemplate.from_messages([("human", """Rewrite the user's last message as a standalone question, using the conversation
+to resolve references ("it", "that one", "the second option"). Do not add facts, names or terms that are not in the conversation.
+If the last message is already standalone, return it unchanged. Reply with the question only.
+
+Conversation:
+{history}
+
+Last message: {question}""")]) | llm | StrOutputParser()
+
+
+def _strip(text: str) -> str:
+    text = text.replace("<|end|>", "")                          # gpt-oss special token leaks through the proxy
+    return re.sub(r"[\x00-\x1f\u200b]+", " ", text).strip()   # so do NUL and zero-width spaces
+
+
 def rewrite(question: str) -> str:
-    text = rewrite_chain.invoke({"question": question}).replace("<|end|>", "")   # gpt-oss special token leaks through the proxy
-    return re.sub(r"[\x00-\x1f\u200b]+", " ", text).strip()                     # so do NUL and zero-width spaces
+    return _strip(rewrite_chain.invoke({"question": question}))
+
+
+def condense(history: list[tuple[str, str]], question: str) -> str:
+    """history = [(role, text)]. Last 6 turns, long answers cut: references point to recent, short context."""
+    h = "\n".join(f"{role}: {text[:600]}" for role, text in history[-6:])
+    return _strip(condense_chain.invoke({"history": h, "question": question}))
 
 
 def format_context(docs) -> str:

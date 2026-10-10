@@ -3,6 +3,7 @@ name = "rag"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.143.0",
     "jupyter>=1.1.1",
     "langchain>=1.4.4",
     "langchain-chroma>=1.1.0",
@@ -16,4 +17,5 @@ dependencies = [
     "rank-bm25>=0.2.2",
     "sentence-transformers>=6.1.0",
     "torchvision>=0.29.1",
+    "uvicorn>=0.54.0",
 ]

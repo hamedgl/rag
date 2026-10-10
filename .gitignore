@@ -6,3 +6,5 @@ data/chroma/
 eval/results/
 __pycache__/
 data/qdrant/
+data/turns.jsonl
+data/feedback.jsonl

@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LangChain Docs Chat</title>
+<style>
+  :root { --bg: #fafaf9; --fg: #1c1917; --muted: #78716c; --card: #fff; --line: #e7e5e4; --accent: #0f766e; --code: #f5f5f4; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1c1917; --fg: #e7e5e4; --muted: #a8a29e; --card: #292524; --line: #44403c; --accent: #5eead4; --code: #1c1917; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px 16px 140px; }
+  h1 { font-size: 17px; margin: 8px 0 20px; }
+  .msg { margin: 14px 0; padding: 12px 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); }
+  .user { background: transparent; border-style: dashed; }
+  .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  pre { background: var(--code); border: 1px solid var(--line); padding: 10px; border-radius: 6px; overflow-x: auto; white-space: pre; }
+  a { color: var(--accent); }
+  .meta, .sources { color: var(--muted); font-size: 13px; margin-top: 8px; }
+  .sources ol { margin: 4px 0 0; padding-left: 20px; }
+  .fb { margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .fb button { font-size: 15px; padding: 2px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+  .fb input { flex: 1; min-width: 160px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  .error { color: #dc2626; }
+  form { position: fixed; bottom: 0; left: 0; right: 0; background: var(--bg); border-top: 1px solid var(--line); padding: 12px 16px; }
+  form div { max-width: 760px; margin: 0 auto; display: flex; gap: 8px; }
+  textarea { flex: 1; resize: none; height: 58px; padding: 8px 10px; font: inherit; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--fg); }
+  form button { padding: 0 18px; border: 0; border-radius: 8px; background: var(--accent); color: var(--bg); font-weight: 600; cursor: pointer; }
+  form button:disabled { opacity: .5; cursor: default; }
+</style>
+</head>
+<body>
+<main>
+  <h1>LangChain docs chat <span class="meta">· answers only from the docs, with sources</span></h1>
+  <div id="log"></div>
+</main>
+<form id="form">
+  <div>
+    <textarea id="q" placeholder="Ask about LangChain, LangGraph or Deep Agents… (Enter to send, Shift+Enter for newline)" aria-label="Question"></textarea>
+    <button id="send">Send</button>
+  </div>
+</form>
+<script>
+const log = document.getElementById("log"), q = document.getElementById("q"), send = document.getElementById("send");
+const messages = [];   // full conversation, sent with every request (the server is stateless per chat)
+
+const esc = s => s.replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+
+// Escape first, then add only our own markup: code fences -> <pre>, [source] -> link. LLM output never becomes raw HTML.
+function render(text, sources) {
+  const urls = Object.fromEntries((sources || []).map(s => [s.source, s.url]));
+  return esc(text)
+    .replace(/```[\w-]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${code}</pre>`)
+    .replace(/\[([\w./-]+)\]/g, (m, src) => urls[src] ? `<a href="${esc(urls[src])}" target="_blank" rel="noopener">[${src}]</a>` : m);
+}
+
+function bubble(cls) {
+  const el = document.createElement("div");
+  el.className = "msg " + cls;
+  el.innerHTML = '<div class="text"></div>';
+  log.appendChild(el);
+  return el;
+}
+
+function feedbackBar(el, id) {
+  const bar = document.createElement("div");
+  bar.className = "fb";
+  bar.innerHTML = '<button title="Good answer">👍</button><button title="Bad answer">👎</button><input placeholder="What was wrong? (optional, sent with 👎)">';
+  const [up, down, note] = bar.children;
+  const rate = async rating => {
+    up.disabled = down.disabled = true;
+    const r = await fetch("/feedback", {method: "POST", headers: {"Content-Type": "application/json"},
+                                        body: JSON.stringify({id, rating, comment: note.value})});
+    bar.innerHTML = r.ok ? '<span class="meta">Thanks, saved.</span>' : '<span class="error">Feedback failed.</span>';
+  };
+  up.onclick = () => rate(1);
+  down.onclick = () => rate(-1);
+  el.appendChild(bar);
+}
+
+async function ask(text) {
+  messages.push({role: "user", content: text});
+  bubble("user").firstChild.textContent = text;
+  const el = bubble("bot"), out = el.firstChild;
+  out.textContent = "Searching…";
+  let answer = "", sources = [];
+  send.disabled = true;
+  try {
+    const r = await fetch("/chat", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({messages})});
+    if (!r.ok) throw new Error(await r.text());
+    const reader = r.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = "";
+    for (;;) {
+      const {value, done} = await reader.read();
+      if (done) break;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {   // one SSE event per blank-line-terminated block
+        const block = buf.slice(0, i); buf = buf.slice(i + 2);
+        const event = block.match(/^event: (.*)$/m)[1], data = JSON.parse(block.match(/^data: (.*)$/m)[1]);
+        if (event === "sources") { sources = data; out.textContent = ""; }
+        else if (event === "token") { answer += data; out.innerHTML = render(answer, sources); }
+        else if (event === "error") { out.innerHTML += `<div class="error">Error: ${esc(data.message)}</div>`; }
+        else if (event === "done") {
+          messages.push({role: "assistant", content: answer});
+          const t = data.timings;
+          el.insertAdjacentHTML("beforeend",
+            `<div class="sources">Sources:<ol>${sources.map(s => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.section)}</a></li>`).join("")}</ol></div>` +
+            `<div class="meta">${data.query !== text ? `searched as: “${esc(data.query)}” · ` : ""}${esc(data.model)} · first token ${t.first_token ?? "-"}s · total ${t.total}s</div>`);
+          feedbackBar(el, data.id);
+        }
+      }
+    }
+  } catch (e) {
+    out.innerHTML = `<span class="error">Request failed: ${esc(String(e.message || e))}</span>`;
+    messages.pop();   // let the user retry without a dangling question
+  }
+  send.disabled = false;
+  q.focus();
+}
+
+document.getElementById("form").onsubmit = e => {
+  e.preventDefault();
+  const text = q.value.trim();
+  if (text && !send.disabled) { q.value = ""; ask(text); }
+};
+q.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); document.getElementById("form").requestSubmit(); } };
+</script>
+</body>
+</html>

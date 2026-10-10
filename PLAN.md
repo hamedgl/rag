@@ -150,3 +150,13 @@ access control, multi-turn conversation.
   - Seed bias again: a rare string copied from a chunk is literally in that chunk, so dense finds it too. The hard case (docs explain the error in different words, or the string lives only in another page's code) can't be drafted from the answer chunk; it needs real user queries (M6).
   - Decision: hybrid stays OFF (no gain in the final pipeline; reranker covers ordering).
 - M3 status: rerank is the win. Rewrite and hybrid kept behind flags. Rewrite returns for multi-turn condensing (M4). Next: M4 service.
+
+## Milestone 4 log
+- M4.1 Service: `make serve` → FastAPI on :8000 (rag/api.py) + one-file vanilla chat UI (rag/chat.html).
+  - POST /chat streams SSE: sources → token… → done (id, condensed query, model, per-stage timings) | error (in-band, since the HTTP status was already sent).
+  - POST /feedback appends 👍/👎 + comment + the WHOLE turn to data/feedback.jsonl (ready-made eval items for M6). Every turn is logged to data/turns.jsonl. Both are gitignored.
+  - UI escapes LLM output and adds only its own markup (``` → <pre>, [source] → doc link). No markdown-to-HTML: the answer is LLM text derived from third-party docs (XSS vector, see M6).
+  - Citation URL = docs.langchain.com/oss/python/ + source without "python/" (verified 4 patterns → 200).
+- Latency (single turn): retrieve 0.06 s, rerank 2.6–3.4 s, first token 3.5–6.2 s. Rerank ≈ 75% of time-to-first-token. Streaming is real (328 events over 2.9 s).
+- Multi-turn: "And which one should I use in production?" → condensed to "Which checkpoint backend should I use in production?" → PostgresSaver/MongoDBSaver with correct citations. Condense adds ~1 s.
+  - Same mechanism as the M3.1 rewrite, opposite outcome: the new vocabulary came from the assistant's previous (docs-grounded) answer, not from the model's stale memory.
