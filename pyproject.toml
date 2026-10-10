@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "jupyter>=1.1.1",
     "langchain>=1.4.4",
+    "langchain-chroma>=1.1.0",
     "langchain-huggingface>=1.2.3",
     "langchain-openai>=1.7.0",
     "langchain-text-splitters>=1.1.3",
