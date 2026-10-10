@@ -195,3 +195,13 @@ access control, multi-turn conversation.
   - noul < choice: isolated yes/no can't compare passages (h7: two passages tie at 0.95, and dense order picks the wrong one). Same lesson as CE vs LLM: ranking needs comparison.
   - decline_acc 0.889 in all 3 runs: h8 (ingestion-gap label) every time. A sharper reranker surfaces related provider chunks more reliably, and the generator answers from them. Borderline label, but watch it: better rerank → more temptation on "not in docs" Qs.
   - DEFAULT is now jev:choice (`RERANK_MODEL` in .env; unset → generator LLM). Gate passes (hit@4 0.985, MRR 0.932). Service: rerank 0.3 s, time-to-first-token 3.5–6.2 s → 1.1 s. Answer generation (~0.8 s prefill) is now the biggest wait.
+
+## Milestone 5 log
+- M5.1 Qdrant server (compose.yml, qdrant/qdrant:v1.19.1 = client version, 127.0.0.1:6333). `QDRANT_URL` set → server, unset → embedded.
+  - Migrated 10,988 points by copying vectors (6 s vs 335 s re-embed); sync afterwards = no-op (content-addressed IDs).
+  - Retrieval identical (0/74 lists differ), but because the server built NO HNSW index: each segment (~1 per CPU core) is under the indexing threshold, so it brute-forces, in Rust (12 ms vs 66 ms embedded).
+  - Forced HNSW on a copy: 0/1,480 true neighbours missed, 1 near-tie swap, 4.5 ms. ANN approximation doesn't matter at 11k points.
+  - Server and eval can now run at the same time (the embedded mode's single-process lock is gone).
+- M5.2 API container: Dockerfile (python:3.14-slim + uv 0.11.23; torch's PyPI wheels bring the CUDA runtime, so no CUDA base image; deps layer cached apart from code). Compose `api` service: GPU via deploy.devices, proxy via host.docker.internal (proxy binds 0.0.0.0:20128), HF cache mounted read-only + HF_HUB_OFFLINE=1 (weights not baked in). `make up` / `make down`.
+  - Image 9.9 GB (torch + CUDA). jupyter/langchain-chroma moved to the dev group (notebook only).
+  - Container: startup 14 s, first token 1.36 s, CUDA on RTX 4070. Gate passes while the container serves.

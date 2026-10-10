@@ -26,8 +26,10 @@ def embedder() -> HuggingFaceEmbeddings:
 
 @lru_cache
 def client() -> QdrantClient:
-    # ponytail: embedded local mode (exact brute-force search, one process at a time). Server mode comes with Compose (M5).
-    c = QdrantClient(path=str(ROOT / "data/qdrant"))
+    """Qdrant server if QDRANT_URL is set (compose.yml; many processes, HNSW index), else embedded local mode
+    (exact brute-force search, one process at a time)."""
+    url = os.environ.get("QDRANT_URL")
+    c = QdrantClient(url=url) if url else QdrantClient(path=str(ROOT / "data/qdrant"))
     atexit.register(c.close)   # else __del__ runs during interpreter teardown and prints an ImportError
     return c
 

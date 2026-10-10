@@ -4,9 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.143.0",
-    "jupyter>=1.1.1",
     "langchain>=1.4.4",
-    "langchain-chroma>=1.1.0",
     "langchain-huggingface>=1.2.3",
     "langchain-openai>=1.7.0",
     "langchain-qdrant>=1.1.0",
@@ -18,4 +16,10 @@ dependencies = [
     "sentence-transformers>=6.1.0",
     "torchvision>=0.29.1",
     "uvicorn>=0.54.0",
+]
+
+[dependency-groups]
+dev = [
+    "jupyter>=1.1.1",
+    "langchain-chroma>=1.1.0",
 ]

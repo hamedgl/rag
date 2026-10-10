@@ -8,3 +8,4 @@ __pycache__/
 data/qdrant/
 data/turns.jsonl
 data/feedback.jsonl
+data/qdrant-server/

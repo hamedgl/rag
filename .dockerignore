@@ -1,0 +1,7 @@
+.venv
+.git
+.env
+data
+eval
+rag.ipynb
+**/__pycache__
