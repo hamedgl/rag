@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LangChain Docs Chat</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
 <style>
   :root { --bg: #fafaf9; --fg: #1c1917; --muted: #78716c; --card: #fff; --line: #e7e5e4; --accent: #0f766e; --code: #f5f5f4; }
   @media (prefers-color-scheme: dark) {
@@ -15,8 +17,20 @@
   h1 { font-size: 17px; margin: 8px 0 20px; }
   .msg { margin: 14px 0; padding: 12px 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); }
   .user { background: transparent; border-style: dashed; }
-  .text { white-space: pre-wrap; overflow-wrap: anywhere; }
-  pre { background: var(--code); border: 1px solid var(--line); padding: 10px; border-radius: 6px; overflow-x: auto; white-space: pre; }
+  .text { overflow-wrap: anywhere; }
+  .user .text { white-space: pre-wrap; }
+  .text > :first-child { margin-top: 0; } .text > :last-child { margin-bottom: 0; }
+  .text p, .text ul, .text ol, .text pre, .text table, .text blockquote { margin: 0 0 10px; }
+  .text ul, .text ol { padding-left: 22px; } .text li { margin: 3px 0; }
+  .text h1, .text h2, .text h3, .text h4 { font-size: 15px; margin: 14px 0 6px; }
+  .text strong { font-weight: 650; }
+  .text code { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  .text pre { background: var(--code); border: 1px solid var(--line); padding: 10px 12px; border-radius: 6px; overflow-x: auto; }
+  .text pre code { border: 0; padding: 0; background: none; }
+  .text table { border-collapse: collapse; display: block; overflow-x: auto; }
+  .text th, .text td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
+  .text blockquote { border-left: 3px solid var(--line); padding-left: 10px; color: var(--muted); }
+  .cite { font-size: 12px; text-decoration: none; padding: 0 4px; border-radius: 4px; background: var(--code); border: 1px solid var(--line); white-space: nowrap; }
   a { color: var(--accent); }
   .meta, .sources { color: var(--muted); font-size: 13px; margin-top: 8px; }
   .sources ol { margin: 4px 0 0; padding-left: 20px; }
@@ -48,12 +62,15 @@ const messages = [];   // full conversation, sent with every request (the server
 
 const esc = s => s.replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 
-// Escape first, then add only our own markup: code fences -> <pre>, [source] -> link. LLM output never becomes raw HTML.
+// LLM output is untrusted (it read third-party docs): markdown -> HTML, then DOMPurify strips scripts, handlers, iframes.
+// Citations [source] or 【source】 (gpt-oss style) become small links to the doc page.
+if (window.DOMPurify) DOMPurify.addHook("afterSanitizeAttributes", n => { if (n.tagName === "A") { n.target = "_blank"; n.rel = "noopener"; } });
 function render(text, sources) {
   const urls = Object.fromEntries((sources || []).map(s => [s.source, s.url]));
-  return esc(text)
-    .replace(/```[\w-]*\n?([\s\S]*?)```/g, (_, code) => `<pre>${code}</pre>`)
-    .replace(/\[([\w./-]+)\]/g, (m, src) => urls[src] ? `<a href="${esc(urls[src])}" target="_blank" rel="noopener">[${src}]</a>` : m);
+  const cited = text.replace(/(?:\[|【)([\w./-]+)(?:\]|】)(?!\()/g,
+    (m, src) => urls[src] ? `<a class="cite" href="${urls[src]}">${src.split("/").pop()}</a>` : m);
+  if (!window.marked || !window.DOMPurify) return esc(text).replace(/\n/g, "<br>");   // CDN unreachable: plain, safe text
+  return DOMPurify.sanitize(marked.parse(cited));
 }
 
 function bubble(cls) {
