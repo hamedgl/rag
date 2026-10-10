@@ -1,5 +1,6 @@
 """Grounded answer chain and LLM judge."""
 import os
+import re
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -33,6 +34,17 @@ Answer: {answer}
 CORRECT if the answer contains the expected facts (extra correct detail is fine; if expected says "Not in docs", the answer must decline).
 WRONG if it misses a key fact, contradicts the expected answer, or answers when it should decline.
 Reply with one word: CORRECT or WRONG.""")]) | judge_llm | StrOutputParser()
+
+rewrite_chain = ChatPromptTemplate.from_messages([("human", """Rewrite this question as a search query for the LangChain documentation.
+Use the terms the docs would use (concept, class and function names) where you can infer them, and keep every specific name from the question.
+Reply with the query only.
+
+Question: {question}""")]) | llm | StrOutputParser()
+
+
+def rewrite(question: str) -> str:
+    text = rewrite_chain.invoke({"question": question}).replace("<|end|>", "")   # gpt-oss special token leaks through the proxy
+    return re.sub(r"[\x00-\x1f\u200b]+", " ", text).strip()                     # so do NUL and zero-width spaces
 
 
 def format_context(docs) -> str:

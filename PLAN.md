@@ -107,3 +107,37 @@ access control, multi-turn conversation.
 - M1.2 eval set: 52 drafted (Gemini) → 45 kept after review (dropped code trivia d4 d8 d13 d20 d29, generic d32 d46). eval/main.jsonl + eval/hard.jsonl = 55 items.
 - Baseline (gpt-oss, full corpus): hit@4 0.851, MRR 0.741, answers 0.87–0.89, declines 0.875–1.0. Drafted set is far easier than the handmade one (hit@4 0.92 vs 0.50): questions written from a chunk land near that chunk.
 - Noise: over 3 identical runs, retrieval is exactly repeatable; only h8 flips (gpt-oss at temperature 0 isn't deterministic). One flip = 12.5 points of decline_acc (8 declines). Gate set below the noise floor: hit@4 0.85 / MRR 0.74 / answers 0.85 / declines 0.85.
+
+## Milestone 2 log
+- M2.1 Qdrant (embedded local mode, `data/qdrant`; server mode with Compose in M5). Same chunks + embedder: metrics identical (hit@4 0.851, MRR 0.741, answers 0.873, declines 0.875). But 3/55 top-4 lists differ, and h1 moved from rank 7 to 6 (an MRR change of 0.0005, lost in rounding). All the swaps are near-ties between duplicate content (chat/TEMPLATE vs vectorstores/TEMPLATE, repeated extensions chunks). Cause: exact search (Qdrant local) vs approximate HNSW (Chroma). Averages hide per-item churn.
+- M2.2 Incremental sync. Changed the plan: content-addressed chunk IDs instead of file hashes. ID = uuid5(page, chunk text, nth copy on that page). Each sync re-runs clean + chunk on everything (0.5 s, CPU), embeds only new IDs and deletes stale ones. This also catches cleaner/chunker changes, which a file hash would miss. The copy counter keeps 31 within-page duplicate chunks as separate points. No-op sync takes 12 s (full embed: 335 s). Check: `uv run python -m rag.test_store`.
+- Gotcha: `make eval` was a no-op ("'eval' is up to date"), because the eval/ directory shadowed the target. Fixed with `.PHONY`.
+- M2.3 Cleaner v2. Audit found the cleaner CORRUPTING CODE: `^import` (meant for MDX snippet imports) deleted 1,541 import lines inside code samples, and the JSX-tag regex stripped 546 tags in 140 code blocks (e.g. `Promise<ReadResult>`). It also dropped 1,910 component titles (Card 898, Tab 429, Accordion 424, Step 153; same bug class as ParamField). Fix: split on ``` fences and run tag/import rules on prose only; keep `title=` as **bold** lines; img → alt text; strip HTML tags and JSX comments. 15% of chunks changed (1,705 added, 1,629 deleted); incremental sync took 91 s.
+  Result: metrics IDENTICAL, 0 answer flips, only ±1 rank shuffles. Eval is blind to code and tab-title correctness (evidence quotes are prose, and drafted Qs came from clean-looking chunks). Kept anyway: corrupt code is wrong without a metric. Eval gap: add Qs whose answer is in a code import or a tab label (feedback → eval, M6).
+- M2.4 Dedup. Measured first: cosine can't separate duplicates from distinct facts (at 0.96, WatsonxRerank vs WatsonxToolkit = different classes, same boilerplate; even 0.995 pairs sit on different pages, so dropping one breaks that page's citation). Changed the plan:
+  - At ingest: drop junk only (138 chunks: printed embedding vectors, 70 from pgvectorstore, plus bare ``` leftovers from splitting).
+  - At query time: `corpus.unique()` collapses exact-duplicate bodies in results (373 boilerplate copies across templated integration pages).
+  - Near-duplicates are left to the M3 reranker.
+  NOT EVALUATED (skipped by choice): the first M3 eval's baseline includes this change.
+- M2 done: Qdrant + content-addressed sync + cleaner v2 + dedup. Gate still passes (last measured: 0.851 / 0.741 / 0.873 / 0.875).
+
+## Milestone 3 log
+- Eval is now parallel: LLM calls run in 8 threads, retrieval stays sequential (embedded Qdrant). 55 Qs: ~6–11 min → 57 s.
+- Baseline incl. M2 dedup: hit@4 0.851, MRR 0.741 (unchanged by dedup), answers 0.855 (1 flip = noise).
+- M3.1 naive rewrite (replaces the question for retrieval): hit@4 0.766, MRR 0.678. WORSE overall, but mixed:
+  - Wins on vague/symptom Qs: h2 None→1, d23 16→10, d42/d44 3→1.
+  - Losses on exact Qs: h3 1→3, d19 1→5.
+  - Losses from invented classes (HumanInTheLoopAgent, InterruptHandler, GraphNode) and v0.x legacy APIs (AgentExecutor: d12 2→20). The LLM knows old LangChain better than these v1 docs.
+  - Output leaks `<|end|>`, `\x00`, `​`.
+  Next: fuse original + rewrite with RRF instead of replacing.
+- M3.1b Fuse original + rewrite (RRF, k=60): hit@4 0.809, MRR 0.720. Between the two, not better.
+  - Equal-weight RRF lets chunks that both lists rank ~8th beat the original's correct #2 (d12 2→8, d22 2→7).
+  - KEY DIAGNOSIS: recall@20 is already 46/47 for the original query (hit@4 40/47). The problem is ORDERING, not recall. Rewrite and hybrid are recall tools, so they have little to fix. Reranker ceiling over the pool: 46/47.
+  - Rewrite stays off for single-turn (`--rewrite` flag kept); its code returns for multi-turn condensing (M4).
+- M3.2 Listwise LLM rerank (gpt-oss, top 20 → 5, rest keep their order). hit@4 0.851 → 0.979 (= the pool ceiling, 46/47), MRR 0.741 → 0.941–0.952, answers 0.855 → 0.945–0.964, declines 1.0.
+  - Fixed: h1 6→1, h5 6→1, d23 16→1, d25 7→1. Still open: h2 (not in the pool at all), d17 (rank 4, wrong answer).
+  - Retrieval is no longer deterministic (LLM in the loop), but over 3 runs hit@4 stayed at 0.979; only d18 moved (1↔2).
+  - Cost: +1 LLM call per query (~20 chunks ≈ 4–5k tokens); eval 57 s → 95 s.
+  - The gateway fell back to Gemini for 1 answer per run (more load → more fallbacks?).
+  - Rerank is now default in `make eval`. Gate raised: hit@4 0.95 / MRR 0.92 / answers 0.92 / declines 0.85.
+  - Remaining gap: recall (h2). Hybrid/rewrite get judged on that one now; the reranker absorbs their ordering noise.

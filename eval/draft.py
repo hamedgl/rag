@@ -93,7 +93,7 @@ def main(seed=42, declines=6):
             items.append(dict(type="decline", q=d["q"], expected="Not in docs", evidence=[],
                               seed_source=c.metadata["source"], seed_section=c.metadata["section"]))
 
-    db = store.get_store("full-v3", corpus.build)
+    db = store.get_store("full-v3", corpus.build())
     pools = [db.similarity_search(it["q"], k=20) for it in items]
     judged = POOL.batch([{"q": it["q"], "chunks": "\n\n".join(f"[{i}] {d.page_content[:1200]}" for i, d in enumerate(p))}
                          for it, p in zip(items, pools)], config={"max_concurrency": 8})

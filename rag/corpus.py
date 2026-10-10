@@ -47,13 +47,26 @@ def _paramfield(m: re.Match) -> str:
     return f"Parameter `{name}`" + (f" ({extra})" if extra else "") + ":"
 
 
-def clean(text: str) -> str:
+HTML_TAG = r"</?(?:a|div|span|br|p|ul|ol|li|table|thead|tbody|tr|td|th|code|img)\b[^>]*>"
+
+
+def _prose(text: str) -> str:
+    """MDX/HTML cleanup for text outside code fences (in code, `import x` and `<Foo>` are real code)."""
+    text = re.sub(r"\{/\*.*?\*/\}", "", text, flags=re.S)                                 # JSX comments: not rendered
     text = re.sub(r"<ParamField\s[^>]*>", _paramfield, text)                              # keep name + default before tags go
-    text = re.sub(r"^[ \t]*:::js\n.*?^[ \t]*:::[ \t]*\n?", "", text, flags=re.S | re.M)   # JS duplicate content
-    text = re.sub(r"^[ \t]*:::(?:python)?[ \t]*\n?", "", text, flags=re.M)                # unwrap Python blocks
+    text = re.sub(r'<[A-Z][A-Za-z]*\s[^>]*?\btitle="([^"]*)"[^>]*>', r"\n**\1**\n", text) # Tab/Accordion/Card/Step titles
+    text = re.sub(r'<img\s[^>]*?\balt="([^"]*)"[^>]*>', r"\1", text)                      # images -> alt text
     text = re.sub(r"^import .*$\n?", "", text, flags=re.M)                                # snippet imports
     text = re.sub(r"</?[A-Z][A-Za-z]*(?:\s[^>]*)?/?>", "", text)                          # JSX tags, keep inner text
-    text = re.sub(r"@\[(`?[^\]]+`?)\]", r"\1", text)                                     # @[`X`] -> `X`
+    text = re.sub(HTML_TAG, "", text)                                                     # HTML tags, keep inner text
+    return re.sub(r"@\[(`?[^\]]+`?)\]", r"\1", text)                                     # @[`X`] -> `X`
+
+
+def clean(text: str) -> str:
+    text = re.sub(r"^[ \t]*:::js\n.*?^[ \t]*:::[ \t]*\n?", "", text, flags=re.S | re.M)   # JS duplicate content
+    text = re.sub(r"^[ \t]*:::(?:python)?[ \t]*\n?", "", text, flags=re.M)                # unwrap Python blocks
+    parts = re.split(r"(```.*?```)", text, flags=re.S)                                    # odd parts are code fences
+    text = "".join(p if i % 2 else _prose(p) for i, p in enumerate(parts))
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
@@ -71,6 +84,24 @@ def chunk(docs: list[Document], size: int = 800, overlap: int = 100) -> list[Doc
     return out
 
 
+def body(d: Document) -> str:
+    """Chunk text without its heading-path prefix."""
+    return d.page_content.split("\n\n", 1)[-1]
+
+
+def unique(docs: list[Document]) -> list[Document]:
+    """Drop results whose body repeats an earlier one (boilerplate shared by templated pages); keeps rank order.
+    ponytail: exact match only. Near-duplicates (cosine > 0.95) also include distinct facts, so they're left to the M3 reranker."""
+    seen = set()
+    return [d for d in docs if not (body(d) in seen or seen.add(body(d)))]
+
+
+def junk(d: Document) -> bool:
+    """Bare fence leftovers from splitting, or printed numbers (embedding vectors in notebook output)."""
+    b = body(d)
+    return len(b.strip("`\n ")) < 20 or (len(b) > 100 and len(re.findall(r"[\d.,\-\s\[\]e]", b)) / len(b) > 0.8)
+
+
 def build(subset: list[str] | None = None) -> list[Document]:
     docs = [Document(page_content=clean(d.page_content), metadata=d.metadata) for d in pages(subset)]
-    return chunk([d for d in docs if len(d.page_content) >= 300])   # drop stub/redirect pages
+    return [c for c in chunk([d for d in docs if len(d.page_content) >= 300]) if not junk(c)]   # drop stub/redirect pages
