@@ -23,16 +23,18 @@ def pmap(f, xs, workers=8):
         return list(ex.map(f, xs))
 
 
-def run(items, db, k=4, pool=20, rewrite=False, rerank=False, bm25=None):
-    qs = [it["q"] for it in items]
-    queries = pmap(generate.rewrite, qs) if rewrite else [None] * len(qs)   # retrieval only; the answer sees the original question
-    pools = [retrieve.search(db, q, pool, rw, bm25) for q, rw in zip(qs, queries)]   # sequential: embedded Qdrant is single-process, ms per query
+def run(items, db, k=4, pool=20, rewrite=False, rerank=False, bm25=None, condense=True):
+    # multi-turn items: condense history + follow-up into the question the pipeline sees (as the service does)
+    asked = pmap(lambda it: generate.condense([tuple(t) for t in it["history"]], it["q"]) if condense and it.get("history") else it["q"], items)
+    rewrites = pmap(generate.rewrite, asked) if rewrite else [None] * len(asked)   # retrieval only
+    pools = [retrieve.search(db, q, pool, rw, bm25) for q, rw in zip(asked, rewrites)]   # sequential: embedded Qdrant is single-process, ms per query
     if rerank:
-        pools = pmap(lambda x: retrieve.rerank(*x), list(zip(qs, pools)))
-    answers = pmap(lambda x: generate.answer(*x), [(q, h[:k]) for q, h in zip(qs, pools)])
-    oks = pmap(lambda x: generate.judge(*x), [(it["q"], it["expected"], a) for it, (a, _) in zip(items, answers)])
+        pools = pmap(lambda x: retrieve.rerank(*x), list(zip(asked, pools)))
+    answers = pmap(lambda x: generate.answer(*x), [(q, h[:k]) for q, h in zip(asked, pools)])
+    # the judge sees the gold standalone question, so a bad condense can't be excused by a confused judge
+    oks = pmap(lambda x: generate.judge(*x), [(it.get("standalone", it["q"]), it["expected"], a) for it, (a, _) in zip(items, answers)])
     rows = []
-    for it, query, hits, (ans, model), ok in zip(items, queries, pools, answers, oks):
+    for it, query, hits, (ans, model), ok in zip(items, asked, pools, answers, oks):
         ev = [norm(e) for e in it["evidence"]]
         rel = [i + 1 for i, d in enumerate(hits) if any(e in norm(d.page_content) for e in ev)]
         rows.append({**it, "query": query, "rank": rel[0] if rel else None, "got": [d.metadata["source"] for d in hits[:k]],
@@ -60,6 +62,7 @@ def main():
     ap.add_argument("--rewrite", action="store_true", help="LLM-rewrite the question before retrieval")
     ap.add_argument("--rerank", action="store_true", help="listwise LLM rerank of the top 20")
     ap.add_argument("--hybrid", action="store_true", help="fuse BM25 with dense search (RRF)")
+    ap.add_argument("--no-condense", action="store_true", help="multi-turn items: retrieve with the raw follow-up")
     ap.add_argument("--gate", action="store_true", help="exit 1 if below eval/thresholds.json")
     a = ap.parse_args()
 
@@ -68,17 +71,19 @@ def main():
     db = store.get_store(f"{a.corpus}-v3", chunks)
     print(f"[{a.corpus}] ready in {time.time() - t:.0f}s")
 
-    rows = run(load_items(a.sets), db, k=a.k, rewrite=a.rewrite, rerank=a.rerank,
+    rows = run(load_items(a.sets), db, k=a.k, rewrite=a.rewrite, rerank=a.rerank, condense=not a.no_condense,
                bm25=retrieve.bm25_index(chunks) if a.hybrid else None)
     m = metrics(rows, a.k)
     for r in rows:
         print(f"  {'✓' if r['ok'] else '✗'} {r['id']:<5} rank={str(r['rank']):<5} {r['type']:<20} {r['q'][:70]}")
+        if r.get("history"):
+            print(f"{'':36}→ {r['query'][:100]}")
     models = {r["model"] for r in rows}
     print(json.dumps(m), "| answered by:", models, "| judge:", generate.judge_llm.model_name)
     if len(models) > 1:
         print("WARNING: mixed generator models (gateway fallback?) - results are not from one model")
 
-    out = EVAL / "results" / f"{time.strftime('%Y%m%d-%H%M%S')}-{a.corpus}-k{a.k}{'-rw' if a.rewrite else ''}{'-hy' if a.hybrid else ''}{'-rr' if a.rerank else ''}.json"
+    out = EVAL / "results" / f"{time.strftime('%Y%m%d-%H%M%S')}-{a.corpus}-k{a.k}{'-rw' if a.rewrite else ''}{'-hy' if a.hybrid else ''}{'-rr' if a.rerank else ''}{'-nc' if a.no_condense else ''}.json"
     out.write_text(json.dumps({"args": vars(a), "metrics": m, "rows": rows}, indent=1))
 
     if a.gate:

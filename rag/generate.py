@@ -42,9 +42,13 @@ Reply with the query only.
 Question: {question}""")]) | llm | StrOutputParser()
 
 
-condense_chain = ChatPromptTemplate.from_messages([("human", """Rewrite the user's last message as a standalone question, using the conversation
-to resolve references ("it", "that one", "the second option"). Do not add facts, names or terms that are not in the conversation.
-If the last message is already standalone, return it unchanged. Reply with the question only.
+condense_chain = ChatPromptTemplate.from_messages([("human", """Rewrite the user's last message as a standalone question for a documentation search.
+- Resolve references ("it", "that one", "the second option") using the conversation.
+- Name the topic the user is still on (the feature, class or concept from the conversation, e.g. "streaming an agent",
+  "long-term memory store"), so the question makes sense without the conversation.
+- Use only names and terms that appear in the conversation. Do not add facts or outside knowledge.
+- If the last message is already standalone or switches to a new topic, return it unchanged.
+Reply with the question only.
 
 Conversation:
 {history}

@@ -160,3 +160,14 @@ access control, multi-turn conversation.
 - Latency (single turn): retrieve 0.06 s, rerank 2.6–3.4 s, first token 3.5–6.2 s. Rerank ≈ 75% of time-to-first-token. Streaming is real (328 events over 2.9 s).
 - Multi-turn: "And which one should I use in production?" → condensed to "Which checkpoint backend should I use in production?" → PostgresSaver/MongoDBSaver with correct citations. Condense adds ~1 s.
   - Same mechanism as the M3.1 rewrite, opposite outcome: the new vocabulary came from the assistant's previous (docs-grounded) answer, not from the model's stale memory.
+- M4.2 Multi-turn eval: eval/multi.jsonl, 8 handmade items (ellipsis, pronoun ×3, ordinal, correction, topic switch, decline). Fixed history (user + assistant text), a gold `standalone` question for the judge, and evidence quotes. In `make eval`; `--no-condense` = baseline.
+  | Variant | answers | hit@4 | recall@20 |
+  |---|---|---|---|
+  | raw follow-up | 2/8 (only topic switch + decline) | 0.29 | 0.43 |
+  | condense v1 | 6/8 | 0.57 | 0.57 |
+  | condense v2 | 7/8 | 0.86 | 1.0 |
+  - v1 failure: references resolved but the TOPIC was dropped ("look things up in the store", "see the text word by word"). "Don't add terms" made it too literal. v2 requires naming the topic from the conversation, and still bans terms from outside it.
+  - m4 is still wrong: "word by word" vs the docs' "LLM tokens" is a vocabulary gap that condense correctly won't bridge (same class as h2).
+  - CAVEAT: the prompt was tuned on the same 8 items, so 7/8 is optimistic.
+  - Full gate (74 items): hit@4 0.985, MRR 0.924, answers 0.959. MRR keeps landing near 0.92: average 2 runs if it flakes.
+- Gotcha: `pkill -f "uvicorn rag.api"` kills the calling shell too (the pattern matches its own command line). Use `pkill -f "[u]vicorn rag.api"`.
