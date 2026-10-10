@@ -221,3 +221,13 @@ access control, multi-turn conversation.
   - Medians: paraphrase 0.911 vs negative 0.914. Negatives score as high as paraphrases. Worst: reversed "ProviderStrategy instead of ToolStrategy" 0.998, max→min TTL 0.994, CopilotKit→LangGraph 0.996.
   - Embeddings encode topic, not logic: the same property makes them good for retrieval and unsafe as cache keys. In identifier-heavy docs, one token is the whole question.
   - Exact-match cache: safe but ~no hits for a single user. "Verify before serving" (Jev same-question check, ~0.3 s) saves too little vs ~1 s first token. Neither built (YAGNI).
+- M5.5 Latency/cost (eval/cost_report.py, against the container service; 10 hard Qs sequential, single-turn):
+  | stage | median | notes |
+  |---|---|---|
+  | retrieve | 0.04 s | embed + Qdrant brute force |
+  | rerank (Jev) | 0.26 s | |
+  | answer prefill → first token | 1.04 s | now the biggest wait |
+  | total turn | 1.63 s (max 4.54 s) | |
+  - Answer call: median 2,723 input tokens, of which ~2,068 (76%) are the PROXY'S HIDDEN PROMPT; 228 output. Our own prompt (system + 4 chunks + question) is only ~650 tokens. Jev rerank ≈ 2.7k input tokens ≈ $0.0001/query.
+  - Biggest lever left is the gateway, not the pipeline: removing the injected prompt would cut answer input tokens ~4× and likely part of the prefill time.
+- M5 done: Qdrant server + GPU API container + Langfuse in one Compose (`make up`), semantic cache rejected on data, latency/cost measured.
