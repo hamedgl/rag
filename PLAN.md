@@ -21,8 +21,8 @@ Phase 2 (later): production-grade, deployment, real-user issues.
 ## Stages
 
 1. **Setup**: uv env, embedder on GPU, verify LLM endpoint ✅
-2. **Ingest**: clone docs, choose subset, clean MDX/JSX noise
-3. **Chunk**: naive recursive splitting, inspect the chunks
+2. **Ingest**: clone docs, choose subset, clean MDX/JSX noise ✅
+3. **Chunk**: naive recursive splitting, inspect the chunks ✅
 4. **Embed + store**: in memory, inspect vectors, prefix comparison
 5. **Retrieve**: similarity search, read the scores
 6. **Generate**: grounded prompt + citations
@@ -46,3 +46,5 @@ access control, multi-turn conversation.
 - Task prompts are built in: `prompt_name="query"` / `"document"`.
 - Similarity of an unrelated pair is about 0.56 (relevant pair about 0.78): cosine scores are relative, not absolute.
 - LLM proxy returned a streamed (SSE) response without being asked. Suspect this first if LangChain fails to parse.
+- Separator lists can't fix code blocks longer than chunk_size (cut-code stays ~30%). Markdown separators fix mid-sentence starts (25%→14%) but add tiny chunks (14→90). Structure-aware splitting (Stage 8) is the real fix.
+- LangChain's markdown separators are regexes: pass `is_separator_regex=True`, otherwise they never match.
