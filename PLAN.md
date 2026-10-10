@@ -211,3 +211,13 @@ access control, multi-turn conversation.
   - Gotcha: v4 "events_only" mode removed /api/public/traces, /observations and /scores reads. Use /api/public/v2/observations with `fields=core,basic,usage,model`.
   - The proxy drops usage on STREAMED responses (even with stream_usage=True), and LangChain then logs the request alias (`kaflama`) as the model. The answer generation shows no tokens or cost; the actual model is in the root trace's metadata. Non-streamed calls (condense) are fine.
   - MEASURED the proxy prompt injection (the M1 "known risk"): "Say hi" = 2,069 input tokens, i.e. ~2,050 hidden tokens on EVERY LLM call (condense, answer, LLM rerank, judge). This hidden overhead dominates cost on short calls.
+- M5.4 Semantic cache: REJECTED on measurement (eval/cache_probe.py, eval/cache_pairs.jsonl). 74 questions × (paraphrase = should hit, hard negative = near-identical wording with a different answer).
+  | threshold | paraphrase hit | wrong hit (negatives) |
+  |---|---|---|
+  | 0.85 | 85% | 84% |
+  | 0.90 | 61% | 57% |
+  | 0.94 | 16% | 30% |
+  | 0.98 | 1% | 11% |
+  - Medians: paraphrase 0.911 vs negative 0.914. Negatives score as high as paraphrases. Worst: reversed "ProviderStrategy instead of ToolStrategy" 0.998, max→min TTL 0.994, CopilotKit→LangGraph 0.996.
+  - Embeddings encode topic, not logic: the same property makes them good for retrieval and unsafe as cache keys. In identifier-heavy docs, one token is the whole question.
+  - Exact-match cache: safe but ~no hits for a single user. "Verify before serving" (Jev same-question check, ~0.3 s) saves too little vs ~1 s first token. Neither built (YAGNI).
