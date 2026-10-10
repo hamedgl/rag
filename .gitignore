@@ -3,3 +3,4 @@
 .venv
 
 data/chroma/
+eval/results/

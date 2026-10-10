@@ -70,3 +70,40 @@ access control, multi-turn conversation.
 - Loose prompt + temperature 1: made-up answers on both bait questions (invented provider list "from the tutorial"; "4000" plus invented assert code). Strict grounding prompt is what prevented them.
 - Loose answer ended with "Skipped: ... Add when ..." (a style not in our prompt) → the proxy may inject its own system prompt. Unverified; check before trusting outputs.
 - Chroma scores = cosine DISTANCE (1 - similarity): 0.228 vs 0.772, same ordering.
+
+---
+
+# Phase 2: production-grade (confirmed 2026-10-10)
+
+| Area | Decision |
+|---|---|
+| Strategy | Eval first, then quality, then service |
+| Users | Single user (no auth) |
+| Corpus | Full LangChain docs (~760 pages) |
+| Eval set | ~50 LLM-drafted + human-reviewed, plus the 10 handmade as hard core; all relevant chunks labeled |
+| Eval gate | `make eval` with score thresholds; a regression fails |
+| Retrieval | query rewrite → hybrid (BM25 + dense) → listwise LLM rerank (20 → 5); dedup at ingest |
+| Multi-turn | condense follow-up into a standalone question (shares the rewrite step) |
+| Cache | semantic cache, gated on a measured wrong-hit rate |
+| Vector DB | Qdrant |
+| Embedder | in API process, GPU |
+| LLM | 9router `kaflama` as-is. KNOWN RISK: Antigravity route appears to inject ~/.gemini/GEMINI.md (Ponytail rules) |
+| Service | FastAPI, streaming, citations, chat UI with 👍/👎 |
+| Tracing | Langfuse self-hosted |
+| Freshness | incremental by file hash; delete vectors of removed pages |
+| Deploy | Docker Compose, local, GPU passthrough |
+
+## Milestones
+1. **Eval v2**: full corpus, drafted and reviewed eval set, chunk-level metrics, `make eval`
+2. **Ingest v2**: dedup, cleaner v2, incremental hashing, Qdrant
+3. **Retrieval v2**: rewrite → hybrid → rerank, one at a time with eval after each
+4. **Service**: FastAPI, streaming, citations, multi-turn, UI, feedback
+5. **Ops**: Compose, GPU containers, Langfuse, semantic cache, latency/cost
+6. **Real-world**: prompt injection via docs, vague queries, feedback → eval, gateway contamination
+
+## Milestone 1 log
+- M1.1 hard set (10 Q, chunk-level evidence): subset hit@4 0.75 → full 0.50; MRR 0.53 → 0.47; answers 0.7 both (different Qs). Main issue at scale: the same feature documented for LangChain, LangGraph and Deep Agents (→ metadata filter, M3).
+- Generator switched to gpt-oss-120b-medium (via `kaflama`, with Gemini as fallback). Judge pinned: JUDGE_MODEL=ag/gemini-3.8-flash-low. Same accuracy 0.7 but decline_acc 1.0 → 0.5: gpt-oss fails by confident wrong answers (h2) and false attribution (h8) instead of refusing. Uses 【】 citations. Gate reset to the gpt-oss baseline.
+- M1.2 eval set: 52 drafted (Gemini) → 45 kept after review (dropped code trivia d4 d8 d13 d20 d29, generic d32 d46). eval/main.jsonl + eval/hard.jsonl = 55 items.
+- Baseline (gpt-oss, full corpus): hit@4 0.851, MRR 0.741, answers 0.87–0.89, declines 0.875–1.0. Drafted set is far easier than the handmade one (hit@4 0.92 vs 0.50): questions written from a chunk land near that chunk.
+- Noise: over 3 identical runs, retrieval is exactly repeatable; only h8 flips (gpt-oss at temperature 0 isn't deterministic). One flip = 12.5 points of decline_acc (8 declines). Gate set below the noise floor: hit@4 0.85 / MRR 0.74 / answers 0.85 / declines 0.85.
