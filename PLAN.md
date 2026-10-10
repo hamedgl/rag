@@ -141,3 +141,12 @@ access control, multi-turn conversation.
   - The gateway fell back to Gemini for 1 answer per run (more load → more fallbacks?).
   - Rerank is now default in `make eval`. Gate raised: hit@4 0.95 / MRR 0.92 / answers 0.92 / declines 0.85.
   - Remaining gap: recall (h2). Hybrid/rewrite get judged on that one now; the reranker absorbs their ordering noise.
+- M3.3 Hybrid (in-memory rank_bm25 over the same chunks, `\w+` tokens, RRF with dense → cut to 20 → rerank). BM25 alone: recall@20 39/47 (dense 46/47), 26 ms/query, index 0.3 s.
+  Hybrid + rerank: recall@20 0.979 (same), hit@4 0.957 (one item, d17 4→15), MRR 0.938. Within noise.
+  BM25 beats dense on 6 Qs (h7 `stream_mode` 7→1, d25 7→3), but all 6 are already in the dense pool, where the reranker fixes them. Hybrid only pays when it brings evidence INTO the pool: 0 cases here.
+  Kept behind `--hybrid`, off by default. Same eval gap as cleaner v2: no rare-token Qs (error strings, env vars, pasted tracebacks), which is where BM25 classically wins. h2 is missed by both (pure vocabulary mismatch).
+- M3.4 Rare-token eval set: `eval/draft_rare.py` drafts Qs that MUST contain an exact rare string (error message, ENV_VAR/config key, import line; rarest token in ≤5 chunks), with evidence pooled over dense ∪ BM25 so labels don't favour one method. 15 drafted → 11 kept (dropped r3 circular, r7 r8 r9 trivia) → eval/rare.jsonl, now part of `make eval`.
+  - Results: dense hit@4 1.0 / MRR 0.848; hybrid 1.0 / 0.955; with rerank both 1.0 / 1.0. SATURATED.
+  - Seed bias again: a rare string copied from a chunk is literally in that chunk, so dense finds it too. The hard case (docs explain the error in different words, or the string lives only in another page's code) can't be drafted from the answer chunk; it needs real user queries (M6).
+  - Decision: hybrid stays OFF (no gain in the final pipeline; reranker covers ordering).
+- M3 status: rerank is the win. Rewrite and hybrid kept behind flags. Rewrite returns for multi-turn condensing (M4). Next: M4 service.

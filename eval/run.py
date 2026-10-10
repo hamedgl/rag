@@ -23,10 +23,10 @@ def pmap(f, xs, workers=8):
         return list(ex.map(f, xs))
 
 
-def run(items, db, k=4, pool=20, rewrite=False, rerank=False):
+def run(items, db, k=4, pool=20, rewrite=False, rerank=False, bm25=None):
     qs = [it["q"] for it in items]
     queries = pmap(generate.rewrite, qs) if rewrite else [None] * len(qs)   # retrieval only; the answer sees the original question
-    pools = [retrieve.search(db, q, pool, rw) for q, rw in zip(qs, queries)]   # sequential: embedded Qdrant is single-process, ms per query
+    pools = [retrieve.search(db, q, pool, rw, bm25) for q, rw in zip(qs, queries)]   # sequential: embedded Qdrant is single-process, ms per query
     if rerank:
         pools = pmap(lambda x: retrieve.rerank(*x), list(zip(qs, pools)))
     answers = pmap(lambda x: generate.answer(*x), [(q, h[:k]) for q, h in zip(qs, pools)])
@@ -44,6 +44,7 @@ def metrics(rows, k):
     scored = [r for r in rows if r["evidence"]]
     return {
         f"hit@{k}": round(sum(bool(r["rank"]) and r["rank"] <= k for r in scored) / len(scored), 3),
+        "recall@20": round(sum(bool(r["rank"]) for r in scored) / len(scored), 3),
         "mrr@20": round(sum(1 / r["rank"] for r in scored if r["rank"]) / len(scored), 3),
         "answer_acc": round(sum(r["ok"] for r in rows) / len(rows), 3),
         "decline_acc": round(sum(r["ok"] for r in rows if not r["evidence"]) / max(1, sum(not r["evidence"] for r in rows)), 3),
@@ -58,14 +59,17 @@ def main():
     ap.add_argument("-k", type=int, default=4)
     ap.add_argument("--rewrite", action="store_true", help="LLM-rewrite the question before retrieval")
     ap.add_argument("--rerank", action="store_true", help="listwise LLM rerank of the top 20")
+    ap.add_argument("--hybrid", action="store_true", help="fuse BM25 with dense search (RRF)")
     ap.add_argument("--gate", action="store_true", help="exit 1 if below eval/thresholds.json")
     a = ap.parse_args()
 
     t = time.time()
-    db = store.get_store(f"{a.corpus}-v3", corpus.build(corpus.SUBSET if a.corpus == "subset" else None))
+    chunks = corpus.build(corpus.SUBSET if a.corpus == "subset" else None)
+    db = store.get_store(f"{a.corpus}-v3", chunks)
     print(f"[{a.corpus}] ready in {time.time() - t:.0f}s")
 
-    rows = run(load_items(a.sets), db, k=a.k, rewrite=a.rewrite, rerank=a.rerank)
+    rows = run(load_items(a.sets), db, k=a.k, rewrite=a.rewrite, rerank=a.rerank,
+               bm25=retrieve.bm25_index(chunks) if a.hybrid else None)
     m = metrics(rows, a.k)
     for r in rows:
         print(f"  {'✓' if r['ok'] else '✗'} {r['id']:<5} rank={str(r['rank']):<5} {r['type']:<20} {r['q'][:70]}")
@@ -74,7 +78,7 @@ def main():
     if len(models) > 1:
         print("WARNING: mixed generator models (gateway fallback?) - results are not from one model")
 
-    out = EVAL / "results" / f"{time.strftime('%Y%m%d-%H%M%S')}-{a.corpus}-k{a.k}{'-rw' if a.rewrite else ''}{'-rr' if a.rerank else ''}.json"
+    out = EVAL / "results" / f"{time.strftime('%Y%m%d-%H%M%S')}-{a.corpus}-k{a.k}{'-rw' if a.rewrite else ''}{'-hy' if a.hybrid else ''}{'-rr' if a.rerank else ''}.json"
     out.write_text(json.dumps({"args": vars(a), "metrics": m, "rows": rows}, indent=1))
 
     if a.gate:
