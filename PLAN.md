@@ -171,3 +171,27 @@ access control, multi-turn conversation.
   - CAVEAT: the prompt was tuned on the same 8 items, so 7/8 is optimistic.
   - Full gate (74 items): hit@4 0.985, MRR 0.924, answers 0.959. MRR keeps landing near 0.92: average 2 runs if it flakes.
 - Gotcha: `pkill -f "uvicorn rag.api"` kills the calling shell too (the pattern matches its own command line). Use `pkill -f "[u]vicorn rag.api"`.
+- M4.3 Reranker benchmark (74 items, 1 run each; latency = sequential single-user probe, 10 hard Qs, warmed up). `--rerank-model <llm>` or `ce:<hf id>`.
+  | Reranker | hit@4 | MRR | answers | latency median/max |
+  |---|---|---|---|---|
+  | none | 0.846 | 0.744 | 0.919 | 0 |
+  | gpt-oss-120b (current) | 0.954 | 0.925 | 0.959 | 3.35 / 5.94 s |
+  | claude-haiku-4.5 (kr/) | 0.985 | 0.906 | 0.959 | 1.06 / 1.31 s |
+  | bge-reranker-v2-m3 (CE, fp32) | 0.938 | 0.824 | 0.932 | 0.52 / 0.61 s |
+  | ms-marco-MiniLM-L-6 (CE) | 0.938 | 0.737 | 0.932 | 0.04 / 0.06 s |
+  - gemini-3.5-flash-lite: 429 free-tier quota under 8 parallel calls (no result).
+  - The no-smaller-gpt-oss premise was wrong: kaflama is already ag/gpt-oss-120b-medium, the only gpt-oss on the proxy.
+  - Haiku ≈ gpt-oss quality at 3× speed. Cross-encoders get evidence into the top 4 but not to rank 1: MiniLM MRR = no rerank. A CE scores topical relevance; only an LLM can follow "contains the answer, not just the topic".
+  - Gotcha: the first CE call includes the model load (bge mean 1.14 s > p95 0.77 s in the parallel run). Warm up before timing.
+- M4.4 TypeSafe Jev reranker (`jev:noul` / `jev:choice`; env JEV_API; POST api.typesafe.ai/v1/systemone). Jev returns typed answers with probabilities, not text, so the "prompt" becomes questions:
+  - noul = pointwise: one yes/no per passage, all 20 in one request, sorted by P(yes).
+  - choice = listwise: one pick over 20 passages as options; its probability distribution is the ranking.
+  Both keep the "actual answer, not just the topic" criterion. Probabilities are 2-decimal, so ties are broken by dense order. NOT deterministic (identical on 1/5 repeats).
+  | Reranker | hit@4 | MRR | answers | latency median |
+  |---|---|---|---|---|
+  | jev:choice (3 runs) | 0.969–0.985 | 0.939–0.940 | 0.946–0.959 | 0.26 s |
+  | jev:noul | 0.954 | 0.876 | 0.946 | 0.25 s |
+  - jev:choice = best MRR of all rerankers, 13× faster than gpt-oss (3.35 s), ~$0.0003/query (input only).
+  - noul < choice: isolated yes/no can't compare passages (h7: two passages tie at 0.95, and dense order picks the wrong one). Same lesson as CE vs LLM: ranking needs comparison.
+  - decline_acc 0.889 in all 3 runs: h8 (ingestion-gap label) every time. A sharper reranker surfaces related provider chunks more reliably, and the generator answers from them. Borderline label, but watch it: better rerank → more temptation on "not in docs" Qs.
+  - DEFAULT is now jev:choice (`RERANK_MODEL` in .env; unset → generator LLM). Gate passes (hit@4 0.985, MRR 0.932). Service: rerank 0.3 s, time-to-first-token 3.5–6.2 s → 1.1 s. Answer generation (~0.8 s prefill) is now the biggest wait.

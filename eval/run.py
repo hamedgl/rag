@@ -3,7 +3,7 @@
 Relevance is evidence-based: a retrieved chunk is relevant if it contains one of the item's evidence quotes,
 so labels survive re-chunking. Items with no evidence are "should decline" questions (retrieval not scored).
 """
-import argparse, json, re, sys, time
+import argparse, json, os, re, sys, time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -23,22 +23,34 @@ def pmap(f, xs, workers=8):
         return list(ex.map(f, xs))
 
 
-def run(items, db, k=4, pool=20, rewrite=False, rerank=False, bm25=None, condense=True):
+def timed(f):
+    def g(*a):
+        t = time.perf_counter()
+        return f(*a), time.perf_counter() - t
+    return g
+
+
+def run(items, db, k=4, pool=20, rewrite=False, rerank=False, bm25=None, condense=True, rerank_model=None):
     # multi-turn items: condense history + follow-up into the question the pipeline sees (as the service does)
     asked = pmap(lambda it: generate.condense([tuple(t) for t in it["history"]], it["q"]) if condense and it.get("history") else it["q"], items)
     rewrites = pmap(generate.rewrite, asked) if rewrite else [None] * len(asked)   # retrieval only
     pools = [retrieve.search(db, q, pool, rw, bm25) for q, rw in zip(asked, rewrites)]   # sequential: embedded Qdrant is single-process, ms per query
+    rr_secs = [None] * len(items)
     if rerank:
-        pools = pmap(lambda x: retrieve.rerank(*x), list(zip(asked, pools)))
+        f = timed(lambda q, p: retrieve.rerank(q, p, model=rerank_model))
+        args = list(zip(asked, pools))
+        # cross-encoder: one GPU model, call it sequentially; LLM rerankers are network-bound, run in threads
+        out = [f(*x) for x in args] if (rerank_model or "").startswith("ce:") else pmap(lambda x: f(*x), args)
+        pools, rr_secs = [o[0] for o in out], [round(o[1], 3) for o in out]
     answers = pmap(lambda x: generate.answer(*x), [(q, h[:k]) for q, h in zip(asked, pools)])
     # the judge sees the gold standalone question, so a bad condense can't be excused by a confused judge
     oks = pmap(lambda x: generate.judge(*x), [(it.get("standalone", it["q"]), it["expected"], a) for it, (a, _) in zip(items, answers)])
     rows = []
-    for it, query, hits, (ans, model), ok in zip(items, asked, pools, answers, oks):
+    for it, query, hits, (ans, model), ok, rr in zip(items, asked, pools, answers, oks, rr_secs):
         ev = [norm(e) for e in it["evidence"]]
         rel = [i + 1 for i, d in enumerate(hits) if any(e in norm(d.page_content) for e in ev)]
         rows.append({**it, "query": query, "rank": rel[0] if rel else None, "got": [d.metadata["source"] for d in hits[:k]],
-                     "answer": ans, "model": model, "ok": ok})
+                     "answer": ans, "model": model, "ok": ok, "rerank_s": rr})
     return rows
 
 
@@ -51,6 +63,8 @@ def metrics(rows, k):
         "answer_acc": round(sum(r["ok"] for r in rows) / len(rows), 3),
         "decline_acc": round(sum(r["ok"] for r in rows if not r["evidence"]) / max(1, sum(not r["evidence"] for r in rows)), 3),
         "n": len(rows),
+        **({"rerank_mean_s": round(sum(t) / len(t), 2), "rerank_p95_s": round(sorted(t)[int(0.95 * (len(t) - 1))], 2)}
+           if (t := [r["rerank_s"] for r in rows if r.get("rerank_s") is not None]) else {}),
     }
 
 
@@ -63,6 +77,7 @@ def main():
     ap.add_argument("--rerank", action="store_true", help="listwise LLM rerank of the top 20")
     ap.add_argument("--hybrid", action="store_true", help="fuse BM25 with dense search (RRF)")
     ap.add_argument("--no-condense", action="store_true", help="multi-turn items: retrieve with the raw follow-up")
+    ap.add_argument("--rerank-model", help='LLM name via the proxy, or "ce:<hf id>" for a cross-encoder (default: generator LLM)')
     ap.add_argument("--gate", action="store_true", help="exit 1 if below eval/thresholds.json")
     a = ap.parse_args()
 
@@ -71,7 +86,8 @@ def main():
     db = store.get_store(f"{a.corpus}-v3", chunks)
     print(f"[{a.corpus}] ready in {time.time() - t:.0f}s")
 
-    rows = run(load_items(a.sets), db, k=a.k, rewrite=a.rewrite, rerank=a.rerank, condense=not a.no_condense,
+    a.rerank_model = a.rerank_model or (os.environ.get("RERANK_MODEL") if a.rerank else None)   # record what actually ran
+    rows = run(load_items(a.sets), db, k=a.k, rewrite=a.rewrite, rerank=a.rerank, condense=not a.no_condense, rerank_model=a.rerank_model,
                bm25=retrieve.bm25_index(chunks) if a.hybrid else None)
     m = metrics(rows, a.k)
     for r in rows:
@@ -83,7 +99,7 @@ def main():
     if len(models) > 1:
         print("WARNING: mixed generator models (gateway fallback?) - results are not from one model")
 
-    out = EVAL / "results" / f"{time.strftime('%Y%m%d-%H%M%S')}-{a.corpus}-k{a.k}{'-rw' if a.rewrite else ''}{'-hy' if a.hybrid else ''}{'-rr' if a.rerank else ''}{'-nc' if a.no_condense else ''}.json"
+    out = EVAL / "results" / f"{time.strftime('%Y%m%d-%H%M%S')}-{a.corpus}-k{a.k}{'-rw' if a.rewrite else ''}{'-hy' if a.hybrid else ''}{'-rr' if a.rerank else ''}{'-' + a.rerank_model.split('/')[-1] if a.rerank_model else ''}{'-nc' if a.no_condense else ''}.json"
     out.write_text(json.dumps({"args": vars(a), "metrics": m, "rows": rows}, indent=1))
 
     if a.gate:
