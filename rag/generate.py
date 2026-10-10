@@ -65,10 +65,10 @@ def rewrite(question: str) -> str:
     return _strip(rewrite_chain.invoke({"question": question}))
 
 
-def condense(history: list[tuple[str, str]], question: str) -> str:
+def condense(history: list[tuple[str, str]], question: str, config=None) -> str:
     """history = [(role, text)]. Last 6 turns, long answers cut: references point to recent, short context."""
     h = "\n".join(f"{role}: {text[:600]}" for role, text in history[-6:])
-    return _strip(condense_chain.invoke({"history": h, "question": question}))
+    return _strip(condense_chain.invoke({"history": h, "question": question}, config=config))
 
 
 def format_context(docs) -> str:

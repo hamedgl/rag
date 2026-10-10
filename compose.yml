@@ -1,3 +1,5 @@
+include: [langfuse/compose.yml]   # tracing stack; secrets in langfuse/.env
+
 services:
   qdrant:
     image: qdrant/qdrant:v1.19.1   # match qdrant-client
@@ -12,6 +14,7 @@ services:
     environment:
       QDRANT_URL: http://qdrant:6333
       LLM_BASE_URL: http://host.docker.internal:20128/v1   # LLM proxy runs on the host
+      LANGFUSE_HOST: http://langfuse-web:3000
     extra_hosts: ["host.docker.internal:host-gateway"]
     volumes:
       - ./data:/app/data                                    # corpus (read at startup) + turns/feedback logs
