@@ -289,3 +289,42 @@ Open, deliberately not done:
 - Injection gaps: A1 reaches answers (scan is report-only); A4 stopped only by retrieval luck; no CSP; injection suite not in the gate.
 - Proxy adds ~2k hidden tokens per call (76% of answer input); its content is unknown.
 - No auth (single user, localhost only).
+
+---
+
+# Phase 3: plan (drafted 2026-10-11, not started)
+
+Goal: answer from the RIGHT slice of the docs: right product, right version/language. Bonus: ingest non-MDX formats.
+Same method as before: measure the problem first, then predict → build → eval → log, one step at a time.
+
+## Facts that shape it
+- Paths already carry the product (langchain/, langgraph/, deepagents/, langsmith/, integrations/, concepts/), so metadata filters need no new data.
+- The docs repo has NO version tags or release branches (588 branches, all features): it is latest-only. Version sources: an older git snapshot of the same repo, Python vs JavaScript variants (src/oss/javascript + `:::js` blocks, both stripped today), or the v0.3 docs in another repo.
+- The repo already contains non-MDX docs: src/langsmith/langsmith-platform-openapi.json and agent-server-openapi.json (API reference, not indexed).
+
+## Scope
+| Area | What |
+|---|---|
+| ⭐ Metadata filters | Product facet on every chunk; filter in Qdrant (payload index), set by the user (UI selector) or inferred from the question (router), with a fallback when the filter empties the pool |
+| ⭐ Doc versions | A second variant of the same docs indexed side by side; answer for the user's version; prefer the matching version, flag when versions disagree |
+| Bonus: more formats | OpenAPI specs → one chunk per endpoint; then one PDF source with real layout (tables, multi-column) |
+
+## Open decisions (grill before starting)
+1. Version source: Python vs JS (in repo, cheap, 100% overlap = hardest filter test) / old git snapshot (true "v-1") / v0.3 docs (real old API, other repo).
+2. Filter UX: explicit selector only / inferred only / both (inferred, user can override).
+3. Router: rules on keywords (cheap, brittle) vs LLM/Jev choice classifier (Jev choice is already in the stack).
+4. When the filter is wrong: retry unfiltered, or show "no results in <product>, showing all".
+5. PDF source for the bonus (e.g. LangChain-related papers, a vendor whitepaper).
+
+## Milestones
+1. **Measure the confusion**: label each eval item with its product; count how often the top 4 contains other-product chunks and how often answers mix products (M1's main issue: the same feature in LangChain, LangGraph, Deep Agents). Baseline before any filter.
+2. **Product metadata + filter**: payload field + Qdrant index; `search(..., product=)`; eval with oracle filters (from labels) to get the ceiling.
+3. **Router**: infer the product from the question (+ multi-turn history); eval router accuracy and end-to-end vs the oracle; "both/unclear" → no filter. UI selector with auto default.
+4. **Versions**: ingest the chosen second variant with a `version` field (content-addressed IDs keep both); version-specific eval items where the answer differs between versions; measure wrong-version answers with and without the filter.
+5. **Bonus, OpenAPI**: one chunk per endpoint (method, path, summary, params, schema); eval items on endpoints; check it doesn't crowd prose answers.
+6. **Bonus, PDF**: layout-aware parsing (tables, columns, headers/footers); compare a naive text extract vs a layout parser on a few table questions.
+
+## Done when
+- Wrong-product chunks in the top 4 measurably down vs the M1 baseline, with no gate regression.
+- Version-specific questions answered for the right version, and conflicts flagged.
+- OpenAPI questions answered from the spec (bonus).
