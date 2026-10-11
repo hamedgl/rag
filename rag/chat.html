@@ -131,8 +131,10 @@ async function ask(text) {
         else if (event === "done") {
           messages.push({role: "assistant", content: answer});
           const t = data.timings;
+          // list only sources the answer cites ([src] or 【src】); none cited (e.g. "Not in docs.") -> no list
+          const cited = sources.filter(s => new RegExp(`[\\[【]${s.source.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[\\]】]`).test(answer));
           el.insertAdjacentHTML("beforeend",
-            `<div class="sources">Sources:<ol>${sources.map(s => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.section)}</a></li>`).join("")}</ol></div>` +
+            (cited.length ? `<div class="sources">Sources:<ol>${cited.map(s => `<li><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.section)}</a></li>`).join("")}</ol></div>` : "") +
             `<div class="meta">${data.query !== text ? `searched as: “${esc(data.query)}” · ` : ""}${esc(data.model)} · first token ${t.first_token ?? "-"}s · total ${t.total}s</div>`);
           feedbackBar(el, data.id);
         }
