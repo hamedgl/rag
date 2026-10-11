@@ -1,7 +1,7 @@
 # RAG over the LangChain docs
 
 A learning project: build the simplest working RAG pipeline, break it on purpose, then make it production-grade.
-Questions are answered from the LangChain, LangGraph, Deep Agents and LangSmith docs with citations, and an eval gate catches regressions.
+Questions are answered from the LangChain (v1 and v0.3), LangGraph, Deep Agents and LangSmith docs with citations, and an eval gate catches regressions.
 Decisions, results and gotchas live in [PLAN.md](PLAN.md).
 
 ## Pipeline
@@ -31,6 +31,10 @@ an NVIDIA GPU (~1.5 GB VRAM for the embedder) and an OpenAI-compatible LLM endpo
 uv sync
 git submodule update --init --filter=blob:none   # docs repo, pinned commit (sparse checkout: src/oss by default)
 git -C data/langchain-docs sparse-checkout add src/langsmith src/snippets   # LangSmith pages + shared snippets
+# v0.3 docs (second docs version; mostly notebooks), pinned:
+git clone --filter=blob:none --sparse -b v0.3 https://github.com/langchain-ai/langchain.git data/langchain-v03
+git -C data/langchain-v03 checkout 9971fd8caafcfddddc94492cdecb02ce67b82da6
+git -C data/langchain-v03 sparse-checkout set docs/docs/concepts docs/docs/how_to docs/docs/tutorials
 ```
 
 Create `.env`:
