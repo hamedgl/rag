@@ -374,3 +374,32 @@ Same method as before: measure the problem first, then predict → build → eva
   - Indexed: naive + cleanup, 247 chunks, citations → arxiv.org/abs/<id> (UI allowlist extended). Full index: 6/6 answered at rank 1; 0 paper chunks in non-paper top 4s. Gate (98 items) passes: answers 0.908.
   - Lesson: "layout-aware" isn't automatically better. Test parsers on YOUR documents' failure modes (here: a table next to a figure), end to end.
 - Phase 3 scope done: versions (route + filter + fallback), OpenAPI, PDFs. Product filter skipped on data.
+
+---
+
+# Phase 3: CLOSED (2026-10-11)
+
+Final state: 27,466 chunks = LangChain/LangGraph/Deep Agents v1 + LangSmith docs (snippets inlined), LangChain v0.3 docs (notebooks), the LangSmith API reference (632 endpoints), and 2 papers (RAG survey, ReAct).
+Retrieval: route version (Jev) → version-filtered dense top 20 → Jev rerank (choice + noul in one call) → fallback to all versions if no top-4 passage answers → top 4.
+Gate (98 items, 9 sets): hit@4 0.955, MRR 0.926, answers 0.908 (swings ±3 items between runs), declines 0.889. Time to first token ~1.3 s (routing +0.25 s).
+
+| Delivered | Measured outcome |
+|---|---|
+| Doc versions | v1 questions with v0.3 chunks in top 4: 12 → 2 (both decline items); router 6/6 |
+| OpenAPI | 5/6 API questions answered with the exact endpoint cited; 0 crowding |
+| PDFs | 6/6 at rank 1; plain text + cleanup beat the layout parser on tables |
+| Product filter | skipped: 6% off-product, 30% of questions multi-product |
+
+Lessons:
+- Re-measure the problem on the current pipeline (product confusion was a pre-rerank number).
+- Know what a score means: choice probabilities are relative (sum to 1), so they can't act as a confidence or carry a penalty; noul is absolute.
+- Filters must act at search time; nothing after search recovers what it dropped.
+- A corpus change invalidates eval labels: re-pool, with the same filters (version) the system uses.
+- "Layout-aware" isn't automatically better: test on your own documents' failure modes.
+
+Open, deliberately not done:
+- Legacy code inside v1 docs (e.g. Portkey page with AgentExecutor): the version label marks the repo, not the API used (v4).
+- a1 (background run endpoint lost to prose); persistent failures h2, h8, d17, d19, l1, m4.
+- Gate sits near the noise floor; average 2 runs if it flakes.
+- pymupdf4llm (AGPL) kept only for eval/pdf_parsers.py.
+- Phase 2 open items still stand (feedback → eval, vocabulary gap, injection gaps, proxy hidden prompt, no auth).

@@ -71,5 +71,5 @@ After changing the corpus, re-pool eval labels: `uv run python -m eval.repool ha
 
 ## Status
 
-Phase 2 is closed (2026-10-11). Open items and deliberate gaps are listed at the end of PLAN.md.
-Current gate (80 items): hit@4 0.958, MRR 0.952, answers 0.938, time to first token ~1.1 s. See [PLAN.md](PLAN.md#milestones).
+Phases 2 and 3 are closed (2026-10-11). Open items and deliberate gaps are listed at the end of PLAN.md.
+Current gate (98 items): hit@4 0.955, MRR 0.926, answers 0.908, time to first token ~1.3 s. See [PLAN.md](PLAN.md#milestones).
