@@ -356,3 +356,11 @@ Same method as before: measure the problem first, then predict → build → eva
   - GPU OOM gotcha (8 GB): after a bulk sync, PyTorch keeps the embedding peak reserved; with the API container's 1.6 GB, the next query died with CUBLAS_STATUS_ALLOC_FAILED. Fix: torch.cuda.empty_cache() after sync.
   - RE-POOL GOTCHA: the pooling judge doesn't know versions. It added v0.3 answers (create_tool_calling_agent, create_react_agent) as evidence for v1 questions, which would make the version eval REWARD version confusion. repool.py now only takes quotes from chunks matching an item's `version`.
   - Gate (92 items, api in `make eval`): passes; answers swing 0.880–0.913 across identical runs (±3 items) around the 0.89 threshold. If it flakes, average 2 runs rather than lowering the bar.
+- P3.5 Generator A/B: gpt-oss-120b (kaflama) vs ag/gemini-3.8-flash-low, same retrieval, 92 items × 2 runs each. Caveat: the judge is ALSO gemini-3.8-flash-low (self-grading).
+  | | gpt-oss | gemini-flash-low |
+  |---|---|---|
+  | answers | 0.880 / 0.913 | 0.891 / 0.902 |
+  | declines | 0.889 | 0.889 |
+  | first token / total (10 hard Qs, same context) | 1.04 / 1.35 s | 1.89 / 2.37 s |
+  - A tie on quality even with self-grading. 8 of the failures are SHARED (h2, h8, d17, d19, l1, m4, v4, a1) = retrieval/label/content problems no generator fixes. Model-specific: Gemini d41 says "Not in docs." then gives the full correct answer under "Related:" (it reads "the docs only show an example" as not documented). The adjacent-info rule is ambiguous and each model resolves it differently. v1: picked create_react_agent over AgentExecutor from the same v0.3 pool.
+  - Decision: keep gpt-oss (equal quality, ~2× faster, shorter answers). Switching generators needs the gate run twice, because the prompt rules interact with the model.
