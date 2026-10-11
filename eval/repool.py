@@ -2,6 +2,7 @@
 answer a question (new pages, inlined snippets) in different words, and the metrics would count finding them as a miss.
 For each item with evidence: the pinned judge reads the top 20 of dense ∪ BM25 (so labels don't favour one method) and
 every chunk that answers gets a verbatim quote added. Quotes are only ADDED, never removed.
+Items with a `version` only take quotes from chunks of that version.
 Run: uv run python -m eval.repool hard main rare multi langsmith
 """
 import json, sys
@@ -26,7 +27,9 @@ def main(sets):
         for it, pool, r in zip(todo, pools, judged):
             rel = (parse(r) or {}).get("relevant", [])
             quotes = [x["quote"] for x in (rel if isinstance(rel, list) else []) if isinstance(x, dict) and isinstance(x.get("id"), int)
-                      and 0 <= x["id"] < len(pool) and norm(x.get("quote", "")) and norm(x["quote"]) in norm(pool[x["id"]].page_content)]
+                      and 0 <= x["id"] < len(pool) and norm(x.get("quote", "")) and norm(x["quote"]) in norm(pool[x["id"]].page_content)
+                      # version items: the judge doesn't know versions, so a v0.3 chunk can look "relevant" to a v1 question
+                      and pool[x["id"]].metadata.get("version", "v1") == it.get("version", pool[x["id"]].metadata.get("version", "v1"))]
             new = [e for e in dict.fromkeys(quotes) if norm(e) not in {norm(v) for v in it["evidence"]}]
             it["evidence"] += new
             added += len(new)

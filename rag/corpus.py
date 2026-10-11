@@ -9,6 +9,8 @@ from langchain_text_splitters import Language, MarkdownHeaderTextSplitter, Recur
 SRC = Path(__file__).resolve().parent.parent / "data/langchain-docs/src"
 DOCS = SRC / "oss"          # LangChain, LangGraph, Deep Agents: sources are paths relative to here ("langchain/agents")
 LANGSMITH = SRC / "langsmith"   # LangSmith (tracing, evals, deployment, Studio, Fleet): sources "langsmith/<page>"
+OPENAPI = {"agent-server-api": LANGSMITH / "agent-server-openapi.json",        # published at docs.langchain.com/langsmith/<key>/...
+           "smith-api": LANGSMITH / "langsmith-platform-openapi.json"}
 V03 = SRC.parent.parent / "langchain-v03/docs/docs"   # v0.3 docs (langchain repo, branch v0.3; concepts, how_to, tutorials)
 V03_DIRS = ("concepts", "how_to", "tutorials")
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
@@ -142,6 +144,62 @@ def junk(d: Document) -> bool:
     return len(b.strip("`\n ")) < 20 or (len(b) > 100 and len(re.findall(r"[\d.,\-\s\[\]e]", b)) / len(b) > 0.8)
 
 
+def _slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+
+def _type(schema: dict) -> str:
+    if "$ref" in schema:
+        return schema["$ref"].rsplit("/", 1)[-1]
+    if "anyOf" in schema or "oneOf" in schema:
+        return " | ".join(_type(x) for x in schema.get("anyOf") or schema.get("oneOf"))
+    if schema.get("type") == "array":
+        return f"array[{_type(schema.get('items', {}))}]"
+    return schema.get("type", "object")
+
+
+def _fields(schema: dict, spec: dict, depth: int = 0) -> list[str]:
+    """Top-level properties of a request body schema: '- name (type, required): description'. Resolves $ref and merges
+    allOf (schemas that extend a base schema, e.g. RunCreateStreamingStateful = RunCreateStateful + on_disconnect)."""
+    if "$ref" in schema:
+        schema = spec["components"]["schemas"].get(schema["$ref"].rsplit("/", 1)[-1], {})
+    if "allOf" in schema and depth < 3:
+        return [f for part in schema["allOf"] for f in _fields(part, spec, depth + 1)]
+    req = set(schema.get("required", []))
+    return [f"- `{n}` ({_type(p)}{', required' if n in req else ''}){': ' + p['description'].strip() if p.get('description') else ''}"
+            for n, p in schema.get("properties", {}).items()]
+
+
+def api_chunks() -> list[Document]:
+    """One chunk per OpenAPI operation (632 across the two LangSmith specs). Built directly, not header-split:
+    an endpoint must stay together with its parameters. ponytail: request-body $refs resolved one level, capped at 3k chars."""
+    out = []
+    for key, path in OPENAPI.items():
+        spec = json.loads(path.read_text())
+        api = spec["info"]["title"] + " API"
+        for route, methods in spec["paths"].items():
+            for method, op in methods.items():
+                if method not in ("get", "post", "put", "patch", "delete"):
+                    continue
+                tag, summary = (op.get("tags") or ["other"])[0], op.get("summary") or op.get("operationId", route)
+                parts = [f"`{method.upper()} {route}`", op.get("description", "").strip()]
+                params = [f"- `{x['name']}` ({x.get('in')}{', required' if x.get('required') else ''}, {_type(x.get('schema', {}))})"
+                          + (f": {x['description'].strip()}" if x.get("description") else "") for x in op.get("parameters", []) if "name" in x]
+                if params:
+                    parts.append("Parameters:\n" + "\n".join(params))
+                body = op.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema")
+                if body:
+                    fields = _fields(body, spec)
+                    parts.append("Request body:\n" + "\n".join(fields) if fields else f"Request body: {_type(body)}")
+                parts.append("Responses: " + ", ".join(f"{c} {r.get('description', '')}".strip() for c, r in op.get("responses", {}).items()))
+                section = f"{api} > {tag} > {summary}"
+                text = (section + "\n\n" + "\n\n".join(x for x in parts if x))[:3000]
+                out.append(Document(page_content=text, metadata={"source": f"langsmith/{key}/{_slug(tag)}/{_slug(summary)}", "title": api,
+                                                                 "section": section, "version": "v1", "kind": "api"}))
+    return out
+
+
 def build(subset: list[str] | None = None) -> list[Document]:
     docs = [Document(page_content=clean(d.page_content), metadata=d.metadata) for d in pages(subset)]
-    return [c for c in chunk([d for d in docs if len(d.page_content) >= 300]) if not junk(c)]   # drop stub/redirect pages
+    chunks = [c for c in chunk([d for d in docs if len(d.page_content) >= 300]) if not junk(c)]   # drop stub/redirect pages
+    return chunks + (api_chunks() if not subset else [])

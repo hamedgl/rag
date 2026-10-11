@@ -65,6 +65,9 @@ def sync(name: str, chunks) -> dict:
     db = QdrantVectorStore(client=c, collection_name=name, embedding=embedder())
     for i in range(0, len(new), 1000):
         db.add_documents([want[j] for j in new[i:i + 1000]], ids=new[i:i + 1000])
+    if new:
+        import torch
+        torch.cuda.empty_cache()   # bulk embedding leaves its peak reserved; free it or later queries can't get cuBLAS memory (8 GB GPU)
     return {"added": len(new), "deleted": len(gone), "total": len(want)}
 
 
