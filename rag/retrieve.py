@@ -79,14 +79,17 @@ def search(db, question: str, pool: int = 20, rewrite: str | None = None, bm25=N
     return corpus.unique(rrf(rankings))[:pool]
 
 
-JEV_URL = "https://api.typesafe.ai/v1/systemone"
+# Laya = open-weights Jev clone serving the same API (local: `uvx --from "laya[serve]" laya-serve`)
+APIS = {"jev": ("https://api.typesafe.ai/v1/systemone", "JEV_API"),
+        "laya": (os.environ.get("LAYA_URL", "http://127.0.0.1:8000/v1/systemone"), "LAYA_API_KEY")}
 JEV_ASK = "contain the actual answer to the user's question (the fact, value, code or steps), not just the same topic"
 
 
-def _jev(state: str, questions: dict) -> dict:
+def _jev(state: str, questions: dict, api: str = "jev") -> dict:
     """TypeSafe Jev: typed answers with probabilities instead of text. Retries 429/529 as the API asks."""
+    url, key = APIS[api]
     for attempt in range(4):
-        r = httpx.post(JEV_URL, headers={"Authorization": f"Bearer {os.environ['JEV_API']}"}, timeout=30,
+        r = httpx.post(url, headers={"Authorization": f"Bearer {os.environ.get(key, 'none')}"}, timeout=30,
                        json={"model": "jev-latest", "state": state, "questions": questions})
         if r.status_code not in (429, 529):
             break
@@ -95,12 +98,12 @@ def _jev(state: str, questions: dict) -> dict:
     return r.json()["answers"]
 
 
-def _jev_scores(question: str, docs, style: str) -> list[float]:
+def _jev_scores(question: str, docs, style: str, api: str = "jev") -> list[float]:
     """noul: one yes/no per passage (pointwise), all in one request. choice: one pick over all passages (listwise distribution)."""
     state = f"A user asked the LangChain documentation: {question}"
     if style == "noul":
         ans = _jev(state, {f"p{i}": {"type": "noul", "instructions": f"Does this passage {JEV_ASK}?\n\nPassage:\n{d.page_content}"}
-                           for i, d in enumerate(docs)})
+                           for i, d in enumerate(docs)}, api)
         return [ans[f"p{i}"]["noul"] for i in range(len(docs))]
     # choice ranks, but its probabilities sum to 1 over the pool, so it can't say "none of these answer". The same
     # request also asks one noul per passage: an absolute P(answers), used for the version fallback. Jev evaluates all
@@ -108,7 +111,7 @@ def _jev_scores(question: str, docs, style: str) -> list[float]:
     ans = _jev(state, {"c": {"type": "choice", "instructions": f"Which passage does {JEV_ASK}?",
                              "criteria": {f"p{i}": d.page_content for i, d in enumerate(docs)}},
                        **{f"a{i}": {"type": "noul", "instructions": f"Does this passage {JEV_ASK}?\n\nPassage:\n{d.page_content}"}
-                          for i, d in enumerate(docs)}})
+                          for i, d in enumerate(docs)}}, api)
     for i, d in enumerate(docs):
         d.metadata["answers_p"] = ans[f"a{i}"]["noul"]
     probs = ans["c"]["probabilities"]
@@ -117,11 +120,12 @@ def _jev_scores(question: str, docs, style: str) -> list[float]:
 
 def rerank(question: str, docs, top: int = 5, model: str | None = None):
     """model: None = RERANK_MODEL from .env, else the generator LLM; "ce:<hf id>" = local cross-encoder (scores every pair, reorders all);
-    "jev:noul" / "jev:choice" = TypeSafe Jev probabilities (pointwise / listwise);
+    "jev:noul" / "jev:choice" = TypeSafe Jev probabilities (pointwise / listwise); "laya:noul" / "laya:choice" = same on Laya;
     any other name = that LLM via the proxy (listwise: top `top` in its order, then the rest in original order)."""
     model = model or os.environ.get("RERANK_MODEL")   # default set in .env; unset -> generator LLM
-    if model in ("jev:noul", "jev:choice"):
-        scores = _jev_scores(question, docs, model[4:])
+    api, _, style = (model or "").partition(":")
+    if api in APIS and style in ("noul", "choice"):
+        scores = _jev_scores(question, docs, style, api)
         for d, sc in zip(docs, scores):
             d.metadata["rerank_score"] = sc
         return [docs[i] for i in sorted(range(len(docs)), key=lambda i: -scores[i])]   # stable: ties (2-decimal probs) keep dense order

@@ -403,3 +403,16 @@ Open, deliberately not done:
 - Gate sits near the noise floor; average 2 runs if it flakes.
 - pymupdf4llm (AGPL) kept only for eval/pdf_parsers.py.
 - Phase 2 open items still stand (feedback → eval, vocabulary gap, injection gaps, proxy hidden prompt, no auth).
+
+## Side test: Laya reranker (2026-10-11)
+Laya = open-weights (Apache 2.0) Jev clone, ModernBERT-large 421M, serves the same `/v1/systemone` API. Run locally: `LAYA_HOST=127.0.0.1 LAYA_DEVICE=cuda LAYA_PRELOAD=1 LAYA_MODELS=english uvx --from "laya[serve]" laya-serve` (RTX 4070, ~0.8 GB checkpoint). `--rerank-model laya:noul|laya:choice` (`LAYA_URL`, `LAYA_API_KEY` optional). Router stays on Jev, so only the reranker changes. Same gate sets (98 items), 1 run each:
+| Reranker | hit@4 | MRR | answers | declines | rerank mean | version fallbacks |
+|---|---|---|---|---|---|---|
+| jev:choice (closing gate) | 0.955 | 0.926 | 0.908 | 0.889 | 0.29 s | 9 |
+| laya:noul | 0.685 | 0.551 | 0.724 | 0.889 | 1.52 s | 0 (noul sets no answers_p) |
+| laya:choice | 0.573 | 0.391 | 0.592 | 0.889 | 1.63 s | 6 |
+- recall@20 0.978 in both: the evidence is in the pool, Laya orders it worse than dense alone (M4.3 no-rerank: hit@4 0.846 / MRR 0.744 on 74 items).
+- choice < noul, as predicted: all options share a 192-token head budget, so 20 passages of ~250 tokens are cut to ~10 tokens each. noul gets 512 tokens per passage and still loses.
+- Laya's own card: "a fast base to specialise, not a zero-shot decision engine" (0.362 zero-shot on typed decisions). Server warned the checkpoint ships invalid choice temperatures → uncalibrated.
+- Latency: 0.03–0.47 s for a single 3-passage call, but 1.5 s mean under the eval's parallel threads (one local GPU, 20 passages + 20 nouls per request). Jev is faster AND better.
+- Decision: keep jev:choice. Laya only worth revisiting fine-tuned on our labels (eval pools give ~100 questions × 20 passages of graded pairs).
