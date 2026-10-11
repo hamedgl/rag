@@ -64,13 +64,21 @@ const esc = s => s.replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&
 
 // LLM output is untrusted (it read third-party docs): markdown -> HTML, then DOMPurify strips scripts, handlers, iframes.
 // Citations [source] or 【source】 (gpt-oss style) become small links to the doc page.
-if (window.DOMPurify) DOMPurify.addHook("afterSanitizeAttributes", n => { if (n.tagName === "A") { n.target = "_blank"; n.rel = "noopener"; } });
+// Output policy, enforced here and not trusted to the model (prompt rules alone failed the injection tests, M6):
+// no images (an <img> loads on render: a zero-click leak of whatever the model put in its URL), and links only to the docs.
+const ALLOWED_LINK = /^https:\/\/docs\.langchain\.com\//;
+if (window.DOMPurify) DOMPurify.addHook("afterSanitizeAttributes", n => {
+  if (n.tagName === "A") {
+    if (ALLOWED_LINK.test(n.getAttribute("href") || "")) { n.target = "_blank"; n.rel = "noopener"; }
+    else n.removeAttribute("href");   // keep the text, drop the link
+  }
+});
 function render(text, sources) {
   const urls = Object.fromEntries((sources || []).map(s => [s.source, s.url]));
   const cited = text.replace(/(?:\[|【)([\w./-]+)(?:\]|】)(?!\()/g,
     (m, src) => urls[src] ? `<a class="cite" href="${urls[src]}">${src.split("/").pop()}</a>` : m);
   if (!window.marked || !window.DOMPurify) return esc(text).replace(/\n/g, "<br>");   // CDN unreachable: plain, safe text
-  return DOMPurify.sanitize(marked.parse(cited));
+  return DOMPurify.sanitize(marked.parse(cited), {FORBID_TAGS: ["img", "picture", "source", "video", "audio", "iframe", "form"]});
 }
 
 function bubble(cls) {

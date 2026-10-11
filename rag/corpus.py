@@ -53,6 +53,7 @@ HTML_TAG = r"</?(?:a|div|span|br|p|ul|ol|li|table|thead|tbody|tr|td|th|code|img)
 def _prose(text: str) -> str:
     """MDX/HTML cleanup for text outside code fences (in code, `import x` and `<Foo>` are real code)."""
     text = re.sub(r"\{/\*.*?\*/\}", "", text, flags=re.S)                                 # JSX comments: not rendered
+    text = re.sub(r"<!--.*?-->", "", text, flags=re.S)                                    # HTML comments: not rendered either
     text = re.sub(r"<ParamField\s[^>]*>", _paramfield, text)                              # keep name + default before tags go
     text = re.sub(r'<[A-Z][A-Za-z]*\s[^>]*?\btitle="([^"]*)"[^>]*>', r"\n**\1**\n", text) # Tab/Accordion/Card/Step titles
     text = re.sub(r'<img\s[^>]*?\balt="([^"]*)"[^>]*>', r"\1", text)                      # images -> alt text
