@@ -98,6 +98,10 @@ def main():
     print(json.dumps(m), "| answered by:", models, "| judge:", generate.judge_llm.model_name)
     if len(models) > 1:
         print("WARNING: mixed generator models (gateway fallback?) - results are not from one model")
+    # gateway tripwire: the proxy injects a ~2k-token hidden prompt on every route (M6.4); its style must not leak into answers
+    leaked = [r["id"] for r in rows if re.search(r"(?im)^\W*skipped:|\badd (?:it )?when\b|ponytail|\bYAGNI\b|★ Insight", r["answer"])]
+    if leaked:
+        print(f"WARNING: gateway prompt style leaked into answers: {leaked}")
 
     out = EVAL / "results" / f"{time.strftime('%Y%m%d-%H%M%S')}-{a.corpus}-k{a.k}{'-rw' if a.rewrite else ''}{'-hy' if a.hybrid else ''}{'-rr' if a.rerank else ''}{'-' + a.rerank_model.split('/')[-1] if a.rerank_model else ''}{'-nc' if a.no_condense else ''}.json"
     out.write_text(json.dumps({"args": vars(a), "metrics": m, "rows": rows}, indent=1))
