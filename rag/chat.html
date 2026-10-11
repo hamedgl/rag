@@ -48,7 +48,7 @@
 </head>
 <body>
 <main>
-  <h1>LangChain docs chat <span class="meta">· answers only from the LangChain, LangGraph, Deep Agents &amp; LangSmith docs, with sources</span></h1>
+  <h1>LangChain docs chat <span class="meta">· answers only from the LangChain, LangGraph, Deep Agents &amp; LangSmith docs (plus the RAG survey and ReAct papers), with sources</span></h1>
   <div id="log"></div>
 </main>
 <form id="form">
@@ -70,7 +70,7 @@ const esc = s => s.replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&
 // Citations [source] or 【source】 (gpt-oss style) become small links to the doc page.
 // Output policy, enforced here and not trusted to the model (prompt rules alone failed the injection tests, M6):
 // no images (an <img> loads on render: a zero-click leak of whatever the model put in its URL), and links only to the docs.
-const ALLOWED_LINK = /^https:\/\/(docs\.langchain\.com|python\.langchain\.com\/v0\.3)\//;
+const ALLOWED_LINK = /^https:\/\/(docs\.langchain\.com|python\.langchain\.com\/v0\.3|arxiv\.org\/abs)\//;
 if (window.DOMPurify) DOMPurify.addHook("afterSanitizeAttributes", n => {
   if (n.tagName === "A") {
     if (ALLOWED_LINK.test(n.getAttribute("href") || "")) { n.target = "_blank"; n.rel = "noopener"; }

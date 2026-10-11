@@ -1,6 +1,7 @@
 """Load, clean and chunk the LangChain docs (logic ported from the Phase 1 notebook, cleaner v2 + chunker v3)."""
 import json
 import re
+import unicodedata
 from pathlib import Path
 
 from langchain_core.documents import Document
@@ -11,6 +12,9 @@ DOCS = SRC / "oss"          # LangChain, LangGraph, Deep Agents: sources are pat
 LANGSMITH = SRC / "langsmith"   # LangSmith (tracing, evals, deployment, Studio, Fleet): sources "langsmith/<page>"
 OPENAPI = {"agent-server-api": LANGSMITH / "agent-server-openapi.json",        # published at docs.langchain.com/langsmith/<key>/...
            "smith-api": LANGSMITH / "langsmith-platform-openapi.json"}
+PDFS = SRC.parent.parent / "pdfs"   # arXiv papers (README has the download commands)
+PAPERS = {"2210.03629": "ReAct: Synergizing Reasoning and Acting in Language Models",
+          "2312.10997": "Retrieval-Augmented Generation for Large Language Models: A Survey"}
 V03 = SRC.parent.parent / "langchain-v03/docs/docs"   # v0.3 docs (langchain repo, branch v0.3; concepts, how_to, tutorials)
 V03_DIRS = ("concepts", "how_to", "tutorials")
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
@@ -199,7 +203,24 @@ def api_chunks() -> list[Document]:
     return out
 
 
+def paper_text(path: Path) -> str:
+    """Plain pypdf text, then cheap fixes. Measured against a layout parser (pymupdf4llm, eval/pdf_parsers.py): the layout
+    parser merged ReAct's Table 1 with the plot beside it (axis ticks glued into rows) and lost a table question; plain
+    text kept the rows intact. Its flaws are cheap to fix: ligatures (NFKC), hyphen line breaks, and the reference
+    list (31% of the survey), which is cut up to the appendix.
+    ponytail: the appendix start is matched on pypdf's small-caps rendering ("A A DDITIONAL RESULTS")."""
+    from pypdf import PdfReader
+    text = unicodedata.normalize("NFKC", "\n".join(p.extract_text() or "" for p in PdfReader(path).pages))
+    text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
+    return re.sub(r"^REFERENCES\s*$.*?(?=^[A-Z] [A-Z] ?[A-Z]{3,}|\Z)", "", text, flags=re.S | re.M)
+
+
+def paper_docs() -> list[Document]:
+    return [Document(page_content=paper_text(PDFS / f"{pid}.pdf"), metadata={"source": f"papers/{pid}", "title": title, "version": "v1", "kind": "paper"})
+            for pid, title in PAPERS.items() if (PDFS / f"{pid}.pdf").exists()]
+
+
 def build(subset: list[str] | None = None) -> list[Document]:
     docs = [Document(page_content=clean(d.page_content), metadata=d.metadata) for d in pages(subset)]
     chunks = [c for c in chunk([d for d in docs if len(d.page_content) >= 300]) if not junk(c)]   # drop stub/redirect pages
-    return chunks + (api_chunks() if not subset else [])
+    return chunks + (api_chunks() + chunk(paper_docs()) if not subset else [])

@@ -364,3 +364,13 @@ Same method as before: measure the problem first, then predict → build → eva
   | first token / total (10 hard Qs, same context) | 1.04 / 1.35 s | 1.89 / 2.37 s |
   - A tie on quality even with self-grading. 8 of the failures are SHARED (h2, h8, d17, d19, l1, m4, v4, a1) = retrieval/label/content problems no generator fixes. Model-specific: Gemini d41 says "Not in docs." then gives the full correct answer under "Related:" (it reads "the docs only show an example" as not documented). The adjacent-info rule is ambiguous and each model resolves it differently. v1: picked create_react_agent over AgentExecutor from the same v0.3 pool.
   - Decision: keep gpt-oss (equal quality, ~2× faster, shorter answers). Switching generators needs the gate run twice, because the prompt rules interact with the model.
+- P3.6 Bonus: PDFs (arXiv 2312.10997 RAG survey, 2210.03629 ReAct) in data/pdfs (gitignored). Naive (pypdf) vs layout-aware (pymupdf4llm, AGPL) on the same 6 handmade questions (eval/pdf.jsonl: 2 from ReAct's results table, 4 prose), each in its own throwaway collection (eval/pdf_parsers.py):
+  | parser | chunks | hit@4 | answers | speed |
+  |---|---|---|---|---|
+  | naive pypdf | 314 | 1.0 | 6/6 | ~1 s/paper |
+  | layout pymupdf4llm | 396 | 1.0 | 5/6 | ~18 s/paper |
+  - The layout parser classified ReAct's Table 1 AND the plot beside it as one "picture" and dumped both texts as a <br> blob: plot axis ticks glued into table rows ("Standard 28.7 57.1 65.0"). p2 answered "CoT" instead of "CoT-SC → ReAct 64.6". Naive kept clean rows (the table is a plain text layer).
+  - The layout parser's real wins (headings, joined hyphens, fixed ligatures) are cheap to add to plain text: NFKC (ligatures), joining "-\n" (206 breaks in the survey), and cutting the reference list up to the appendix (31% of the survey; ReAct's appendix with prompts kept). Both parsers drop figure captions mid-sentence at page breaks.
+  - Indexed: naive + cleanup, 247 chunks, citations → arxiv.org/abs/<id> (UI allowlist extended). Full index: 6/6 answered at rank 1; 0 paper chunks in non-paper top 4s. Gate (98 items) passes: answers 0.908.
+  - Lesson: "layout-aware" isn't automatically better. Test parsers on YOUR documents' failure modes (here: a table next to a figure), end to end.
+- Phase 3 scope done: versions (route + filter + fallback), OpenAPI, PDFs. Product filter skipped on data.
