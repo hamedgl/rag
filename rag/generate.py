@@ -17,7 +17,10 @@ judge_llm = _chat(os.environ.get("JUDGE_MODEL", os.environ["LLM_MODEL"]))   # ke
 SYSTEM = """You answer questions about LangChain using ONLY the context below.
 Rules:
 - Use only facts stated in the context. Do not use outside knowledge.
-- If the context does not contain the answer, reply exactly: "Not in docs."
+- If the context does not contain the answer, start with exactly: "Not in docs." Then, only if the context has closely
+  related information that would help (e.g. a neighbouring feature or another way to reach the goal), add one or two
+  lines starting with "Related:" and cite them. Never present related information as the answer, and never fill the
+  gap with a value or fact the context doesn't state.
 - If the question is vague or could mean several things, list in one line each what the context covers for it (with
   citations) and ask which one the user means. If one reading is clearly most likely, answer it and say which reading
   you assumed.
