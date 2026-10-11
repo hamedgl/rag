@@ -264,3 +264,28 @@ access control, multi-turn conversation.
   - New eval/langsmith.jsonl (6 handmade). Two of MY labels were wrong and the system right: l5 (docs DO say max 15 concurrent exports; my grep missed a short bullet) and l4 (SDK anonymizer is the documented primary method). Fixed; stopped editing labels after that.
   - Gate passes (80 items): hit@4 0.958, MRR 0.952, answers 0.938, declines 0.889. Real costs of the bigger corpus: h2 got worse (neighbouring memory content → wrong "delete-old-messages hook" answer); l1 mixes app tracing with self-hosted LangSmith telemetry.
   - "LangSmith + Grafana" now answered from the docs (observability Helm stack: Loki/Mimir/Tempo/Grafana).
+
+---
+
+# Phase 2: CLOSED (2026-10-11)
+
+Final state: `make up` = Qdrant + GPU API (FastAPI, SSE, citations, multi-turn, feedback) + Langfuse.
+Corpus: OSS + LangSmith docs with snippets inlined, 1,137 pages / 24,044 chunks.
+Retrieval: dense top 20 → Jev listwise rerank → top 4.
+Gate (80 items): hit@4 0.958, MRR 0.952, answers 0.938, declines 0.889. Time to first token ~1.1 s.
+
+| Delivered | Measured outcome |
+|---|---|
+| Eval v2 + gate | 5 sets (hard, main, rare, multi, langsmith); re-pooling after corpus changes |
+| Ingest v2 | Qdrant, content-addressed sync (no-op 12 s vs 335 s full embed), cleaner fixes (code imports, titles, comments), snippet inlining |
+| Retrieval v2 | rerank was the win (hit@4 0.85 → 0.98); rewrite worse, hybrid no gain (kept behind flags) |
+| Service | streaming, citations (cited sources only), multi-turn condense (2/8 → 7/8), safe markdown UI |
+| Ops | Compose + GPU container, Langfuse traces + feedback scores; semantic cache REJECTED (wrong-hit ≥ hit rate) |
+| Real-world | injection layers (closed a zero-click exfil bug), vague queries 0/8 → 5/8, gateway tripwire |
+
+Open, deliberately not done:
+- Feedback → eval (needs real 👎s).
+- Vocabulary mismatch (h2, m4, l1); untried: doc2query / HyDE.
+- Injection gaps: A1 reaches answers (scan is report-only); A4 stopped only by retrieval luck; no CSP; injection suite not in the gate.
+- Proxy adds ~2k hidden tokens per call (76% of answer input); its content is unknown.
+- No auth (single user, localhost only).
