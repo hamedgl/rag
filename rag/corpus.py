@@ -1,4 +1,5 @@
 """Load, clean and chunk the LangChain docs (logic ported from the Phase 1 notebook, cleaner v2 + chunker v3)."""
+import json
 import re
 from pathlib import Path
 
@@ -8,6 +9,8 @@ from langchain_text_splitters import Language, MarkdownHeaderTextSplitter, Recur
 SRC = Path(__file__).resolve().parent.parent / "data/langchain-docs/src"
 DOCS = SRC / "oss"          # LangChain, LangGraph, Deep Agents: sources are paths relative to here ("langchain/agents")
 LANGSMITH = SRC / "langsmith"   # LangSmith (tracing, evals, deployment, Studio, Fleet): sources "langsmith/<page>"
+V03 = SRC.parent.parent / "langchain-v03/docs/docs"   # v0.3 docs (langchain repo, branch v0.3; concepts, how_to, tutorials)
+V03_DIRS = ("concepts", "how_to", "tutorials")
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
 SNIPPET_IMPORT = re.compile(r"""^import (\w+) from ['"](/snippets/[^'"]+\.mdx)['"];?[ \t]*$""", re.M)
 MD_SEPARATORS = RecursiveCharacterTextSplitter.get_separators_for_language(Language.MARKDOWN)
@@ -45,16 +48,34 @@ def load(path: Path) -> Document:
     rel = str(path.relative_to(DOCS) if path.is_relative_to(DOCS) else Path("langsmith") / path.relative_to(LANGSMITH)).removesuffix(".mdx")
     raw = inline_snippets(raw[fm.end():] if fm else raw)
     return Document(page_content=raw,
-                    metadata={"source": rel, "title": title.group(1).strip('"') if title else rel})
+                    metadata={"source": rel, "title": title.group(1).strip('"') if title else rel, "version": "v1"})
+
+
+def notebook_text(path: Path) -> str:
+    """Markdown cells as-is, code cells as ```python fences. Outputs dropped (979 outputs / 2.3 MB of printed
+    results, logs and base64 images in v0.3: noise next to the code that produced them)."""
+    cells = json.loads(path.read_text())["cells"]
+    return "\n\n".join("".join(c["source"]) if c["cell_type"] == "markdown" else f"```python\n{''.join(c['source'])}\n```"
+                        for c in cells if c["cell_type"] in ("markdown", "code") and "".join(c["source"]).strip())
+
+
+def load_v03(path: Path) -> Document:
+    text = notebook_text(path) if path.suffix == ".ipynb" else path.read_text()
+    fm = FRONTMATTER.match(text)
+    text = text[fm.end():] if fm else text
+    rel = "v0.3/" + str(path.relative_to(V03).with_suffix(""))
+    title = re.search(r"^# (.+)$", text, re.M)
+    return Document(page_content=text, metadata={"source": rel, "title": title.group(1).strip() if title else rel, "version": "v0.3"})
 
 
 def pages(subset: list[str] | None = None) -> list[Document]:
-    """All oss pages except the JS duplicates, plus LangSmith; or only `subset` (oss)."""
+    """All oss pages except the JS duplicates, plus LangSmith and the v0.3 docs; or only `subset` (oss)."""
     if subset:
         paths = [DOCS / f"{s}.mdx" for s in subset]
     else:
         paths = sorted(p for p in DOCS.rglob("*.mdx") if "javascript" not in p.relative_to(DOCS).parts) + sorted(LANGSMITH.rglob("*.mdx"))
-    return [load(p) for p in paths]
+    v03 = sorted(p for d in V03_DIRS for p in (V03 / d).rglob("*") if p.suffix in (".ipynb", ".mdx", ".md")) if not subset else []
+    return [load(p) for p in paths] + [load_v03(p) for p in v03]
 
 
 def _paramfield(m: re.Match) -> str:
@@ -82,6 +103,7 @@ def _prose(text: str) -> str:
 
 def clean(text: str) -> str:
     text = re.sub(r"^[ \t]*:::js\n.*?^[ \t]*:::[ \t]*\n?", "", text, flags=re.S | re.M)   # JS duplicate content
+    text = re.sub(r"^[ \t]*:::(?:info|note|tip|important|danger|caution|warning)\b[^\n]*\n?", "", text, flags=re.M)  # v0.3 admonition markers
     text = re.sub(r"^[ \t]*:::(?:python)?[ \t]*\n?", "", text, flags=re.M)                # unwrap Python blocks
     parts = re.split(r"(```.*?```)", text, flags=re.S)                                    # odd parts are code fences
     text = "".join(p if i % 2 else _prose(p) for i, p in enumerate(parts))

@@ -6,6 +6,7 @@ from functools import lru_cache
 
 import httpx
 import numpy as np
+from qdrant_client import models
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -57,13 +58,24 @@ def bm25_index(chunks):
     return lambda q, k: [chunks[i] for i in np.argsort(idx.get_scores(tokens(q)))[::-1][:k]]
 
 
-def search(db, question: str, pool: int = 20, rewrite: str | None = None, bm25=None):
-    """`rewrite` = precomputed rewritten query (batched by the caller), or None. `bm25` = bm25_index(...) for hybrid."""
-    rankings = [db.similarity_search(question, k=pool)]
+def version_filter(version: str | None):
+    """Qdrant filter for one docs version. v1 = "not v0.3": chunks indexed before versions existed have no field."""
+    if version is None:
+        return None
+    cond = [models.FieldCondition(key="metadata.version", match=models.MatchValue(value="v0.3"))]
+    return models.Filter(must=cond) if version == "v0.3" else models.Filter(must_not=cond)
+
+
+def search(db, question: str, pool: int = 20, rewrite: str | None = None, bm25=None, version: str | None = None):
+    """`rewrite` = precomputed rewritten query (batched by the caller), or None. `bm25` = bm25_index(...) for hybrid.
+    `version` = search only that docs version (filtered in Qdrant, so the pool fills with the right version)."""
+    f = version_filter(version)
+    rankings = [db.similarity_search(question, k=pool, filter=f)]
     if rewrite:
-        rankings.append(db.similarity_search(rewrite, k=pool))
+        rankings.append(db.similarity_search(rewrite, k=pool, filter=f))
     if bm25:
-        rankings.append(bm25(question, pool))
+        in_version = lambda d: version is None or (d.metadata.get("version", "v1") == "v0.3") == (version == "v0.3")
+        rankings.append([d for d in bm25(question, pool * 2) if in_version(d)][:pool])
     return corpus.unique(rrf(rankings))[:pool]
 
 
@@ -90,8 +102,15 @@ def _jev_scores(question: str, docs, style: str) -> list[float]:
         ans = _jev(state, {f"p{i}": {"type": "noul", "instructions": f"Does this passage {JEV_ASK}?\n\nPassage:\n{d.page_content}"}
                            for i, d in enumerate(docs)})
         return [ans[f"p{i}"]["noul"] for i in range(len(docs))]
+    # choice ranks, but its probabilities sum to 1 over the pool, so it can't say "none of these answer". The same
+    # request also asks one noul per passage: an absolute P(answers), used for the version fallback. Jev evaluates all
+    # questions in parallel, so this adds tokens, not latency.
     ans = _jev(state, {"c": {"type": "choice", "instructions": f"Which passage does {JEV_ASK}?",
-                             "criteria": {f"p{i}": d.page_content for i, d in enumerate(docs)}}})
+                             "criteria": {f"p{i}": d.page_content for i, d in enumerate(docs)}},
+                       **{f"a{i}": {"type": "noul", "instructions": f"Does this passage {JEV_ASK}?\n\nPassage:\n{d.page_content}"}
+                          for i, d in enumerate(docs)}})
+    for i, d in enumerate(docs):
+        d.metadata["answers_p"] = ans[f"a{i}"]["noul"]
     probs = ans["c"]["probabilities"]
     return [probs.get(f"p{i}", 0.0) for i in range(len(docs))]
 
@@ -103,6 +122,8 @@ def rerank(question: str, docs, top: int = 5, model: str | None = None):
     model = model or os.environ.get("RERANK_MODEL")   # default set in .env; unset -> generator LLM
     if model in ("jev:noul", "jev:choice"):
         scores = _jev_scores(question, docs, model[4:])
+        for d, sc in zip(docs, scores):
+            d.metadata["rerank_score"] = sc
         return [docs[i] for i in sorted(range(len(docs)), key=lambda i: -scores[i])]   # stable: ties (2-decimal probs) keep dense order
     if model and model.startswith("ce:"):
         scores = _cross_encoder(model[3:]).predict([(question, d.page_content) for d in docs])
@@ -112,6 +133,27 @@ def rerank(question: str, docs, top: int = 5, model: str | None = None):
     reply = chain.invoke({"question": question, "passages": passages, "top": top})
     picked = list(dict.fromkeys(i for i in map(int, re.findall(r"\d+", reply)) if i < len(docs)))[:top]
     return [docs[i] for i in picked] + [d for i, d in enumerate(docs) if i not in picked]
+
+
+VERSIONS = {
+    "v1": "current LangChain v1, LangGraph, Deep Agents or LangSmith, or no particular version mentioned",
+    "v0.3": "legacy LangChain v0.x: mentions v0.3, v0.2 or an older version, or legacy APIs such as AgentExecutor, "
+            "initialize_agent, LLMChain, ConversationBufferMemory or RunnableWithMessageHistory",
+}
+
+
+def route_version(question: str, threshold: float = 0.7) -> str:
+    """Which docs version the question is about. Latest unless the router is confident it's legacy."""
+    ans = _jev(f"A user asked the LangChain documentation: {question}",
+               {"v": {"type": "choice", "instructions": "Which version of the documentation is the user asking about?", "criteria": VERSIONS}})
+    return "v0.3" if ans["v"]["probabilities"].get("v0.3", 0) >= threshold else "v1"
+
+
+
+def confident(docs, k: int = 4, threshold: float = 0.5) -> bool:
+    """Does any of the top k reranked passages answer the question (absolute noul P(yes), not choice's relative share)?
+    Unscored pools (non-Jev rerankers) count as confident: no fallback."""
+    return max((d.metadata.get("answers_p", 1.0) for d in docs[:k]), default=0) >= threshold
 
 
 if __name__ == "__main__":

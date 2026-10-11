@@ -36,6 +36,7 @@ class Message(BaseModel):
 
 class Chat(BaseModel):
     messages: list[Message]
+    version: Literal["auto", "v1", "v0.3"] = "auto"   # docs version; auto = routed from the question
 
 
 class Feedback(BaseModel):
@@ -45,6 +46,8 @@ class Feedback(BaseModel):
 
 
 def url(source: str) -> str:
+    if source.startswith("v0.3/"):
+        return f"https://python.langchain.com/v0.3/docs/{source.removeprefix('v0.3/')}/"
     if source.startswith("langsmith/"):
         return "https://docs.langchain.com/" + source
     return "https://docs.langchain.com/oss/python/" + source.removeprefix("python/")
@@ -75,17 +78,25 @@ def chat(req: Chat):
             query = generate.condense(history, question, config=traced(root)) if history else question
             timings["condense"] = lap()
 
-            span = root.start_observation(name="retrieve", as_type="retriever", input=query)
-            pool = retrieve.search(db, query)
+            version = retrieve.route_version(query) if req.version == "auto" else req.version
+            timings["route"] = lap()
+
+            span = root.start_observation(name="retrieve", as_type="retriever", input=query, metadata={"version": version, "chosen": req.version})
+            pool = retrieve.search(db, query, version=version)
             span.update(output=[d.metadata["section"] for d in pool])
             span.end()
             timings["retrieve"] = lap()
 
             reranker = os.environ.get("RERANK_MODEL") or "generator LLM"
             span = root.start_observation(name="rerank", input={"query": query, "candidates": len(pool)}, metadata={"reranker": reranker})
-            docs = retrieve.rerank(query, pool)[:4]
-            sources = [{"source": d.metadata["source"], "section": d.metadata["section"], "url": url(d.metadata["source"])} for d in docs]
-            span.update(output=[s["section"] for s in sources])
+            docs = retrieve.rerank(query, pool)
+            fallback = not retrieve.confident(docs)   # nothing in this version answers: search all versions
+            if fallback:
+                docs = retrieve.rerank(query, retrieve.search(db, query))
+            docs = docs[:4]
+            sources = [{"source": d.metadata["source"], "section": d.metadata["section"], "url": url(d.metadata["source"]),
+                        "version": d.metadata.get("version", "v1")} for d in docs]
+            span.update(output=[s["section"] for s in sources], metadata={"reranker": reranker, "fallback": fallback})
             span.end()
             timings["rerank"] = lap()
             yield sse("sources", sources)
@@ -100,7 +111,9 @@ def chat(req: Chat):
             timings["total"] = lap()
             turn.update(query=query, sources=sources, answer=answer, model=model, timings=timings)
             root.update(output=answer, metadata={"query": query, "model": model, "timings": timings, "turn_id": turn["id"]})
-            yield sse("done", {"id": turn["id"], "query": query, "model": model, "timings": timings})
+            turn.update(version=version, fallback=fallback)
+            yield sse("done", {"id": turn["id"], "query": query, "model": model, "timings": timings,
+                               "version": version, "chosen": req.version, "fallback": fallback})
         except Exception as e:   # mid-stream: HTTP status is already sent, so report in-band
             turn.update(error=repr(e), timings=timings)
             root.update(level="ERROR", status_message=repr(e), metadata={"timings": timings})

@@ -10,3 +10,4 @@ data/turns.jsonl
 data/feedback.jsonl
 data/qdrant-server/
 langfuse/.env
+data/langchain-v03/

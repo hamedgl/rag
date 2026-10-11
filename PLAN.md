@@ -309,7 +309,16 @@ Same method as before: measure the problem first, then predict → build → eva
 | ⭐ Doc versions | A second variant of the same docs indexed side by side; answer for the user's version; prefer the matching version, flag when versions disagree |
 | Bonus: more formats | OpenAPI specs → one chunk per endpoint; then one PDF source with real layout (tables, multi-column) |
 
-## Open decisions (grill before starting)
+## Decisions (settled 2026-10-11)
+| # | Decision | Choice |
+|---|---|---|
+| 1 | Version source | v0.3 docs (langchain repo, branch v0.3, docs/docs): a real old API, and mostly .ipynb, so it doubles as a new format |
+| 2 | Filter UX | inferred by the router, shown as a selector the user can override; unclear → no filter |
+| 3 | Router | Jev choice (probability per product/version; low confidence → unclear) |
+| 4 | Wrong or empty filter | soft filter: filtered + unfiltered pools merged, filtered first, the reranker decides |
+| 5 | PDFs | arXiv papers (RAG/agent), last bonus step |
+
+## Open decisions (as drafted)
 1. Version source: Python vs JS (in repo, cheap, 100% overlap = hardest filter test) / old git snapshot (true "v-1") / v0.3 docs (real old API, other repo).
 2. Filter UX: explicit selector only / inferred only / both (inferred, user can override).
 3. Router: rules on keywords (cheap, brittle) vs LLM/Jev choice classifier (Jev choice is already in the stack).
@@ -328,3 +337,15 @@ Same method as before: measure the problem first, then predict → build → eva
 - Wrong-product chunks in the top 4 measurably down vs the M1 baseline, with no gate regression.
 - Version-specific questions answered for the right version, and conflicts flagged.
 - OpenAPI questions answered from the spec (bonus).
+
+## Phase 3 log
+- P3.1 Product confusion, measured on the current pipeline (labels from where each item's evidence lives; top 4 from the last gate run): only 6.0% of top-4 chunks are off-product (17/284), almost always slot 4. 30% of items (21/71) are genuinely multi-product (same answer in LangChain + LangGraph + Deep Agents). The M1 "product confusion" was measured BEFORE rerank, which already fixes most of it.
+  → Reordered: versions first. Wrong-version chunks will look perfectly on-topic to the reranker, so only metadata can separate them. Then one filter for version + product.
+- P3.2 Doc versions. v0.3 docs from langchain repo branch v0.3 (pinned 9971fd8, sparse: concepts/how_to/tutorials, 191 pages, 149 of them .ipynb) → data/langchain-v03 (gitignored). Notebook loader: markdown cells + code cells as ```python fences, outputs DROPPED (979 outputs / 2.3 MB: printouts, logs, base64 images). Docusaurus :::info/:::note markers stripped. +2,544 chunks (26,587 total); every chunk has metadata.version (v1 / v0.3; old points without the field = v1). Citations → python.langchain.com/v0.3/docs/....
+  - Unfiltered: 12/80 v1 questions got v0.3 chunks in the top 4; answers 0.938 → 0.900. h2's top 2 = v0.3 agent_executor → told a v1 user to use AgentExecutor.
+  - Router: Jev choice v1 vs v0.3 (legacy API names or "v0.x" → v0.3 above 0.7, else v1). 6/6 on eval/versions.jsonl (3 explicit v0.3, 3 v1).
+  - Score penalty (multiply other-version rerank scores): FAILED twice. (1) choice probabilities are peaked: a confident wrong-version chunk at 0.7 × 0.1 still beats 0.00 (any factor > 0 loses to zeros; even tie-breaking only moved 12 → 7). (2) v0.3 how-tos are phrased like questions and crowd the dense top 20, pushing the v1 answer out of the pool BEFORE rerank (v4: rank None). Removed.
+  - Hard filter (Qdrant metadata.version at search time) + fallback to all versions. First fallback signal = choice top prob < 0.3: WRONG signal. choice probabilities sum to 1, so a low top prob means "several equally good", not "none fit"; it fired on v4 and let v0.3 back in. Fix: the same Jev request also asks one noul per passage (absolute P(answers), parallel, no extra latency); fallback if no top-4 passage ≥ 0.5. It now fires only on decline items + l1.
+  - Result (86 items): v1 questions with v0.3 in top 4: 12 → 2 (both decline items, harmless); answers 0.884 → 0.907–0.919. Remaining v4 failure = legacy code INSIDE v1 docs (Portkey integration page uses create_openai_tools_agent/AgentExecutor; 9 v1 chunks contain AgentExecutor). The version label marks the repo, not the API the code uses.
+  - Gate RE-BASELINED for the 26.6k-chunk, two-version corpus (deliberate scope change, ~1 item lower): MRR 0.92 → 0.90, answers 0.92 → 0.89. `make eval` now routes versions and includes eval/versions.jsonl.
+  - Service: version selector (Auto / v1 / v0.3), routed when Auto; done event + UI show "v1 docs (auto)" or "all versions (nothing in v1 docs)". Routing adds 0.25 s.

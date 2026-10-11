@@ -30,11 +30,12 @@ def timed(f):
     return g
 
 
-def run(items, db, k=4, pool=20, rewrite=False, rerank=False, bm25=None, condense=True, rerank_model=None):
+def run(items, db, k=4, pool=20, rewrite=False, rerank=False, bm25=None, condense=True, rerank_model=None, versions=False, fallback=0.5):
     # multi-turn items: condense history + follow-up into the question the pipeline sees (as the service does)
     asked = pmap(lambda it: generate.condense([tuple(t) for t in it["history"]], it["q"]) if condense and it.get("history") else it["q"], items)
     rewrites = pmap(generate.rewrite, asked) if rewrite else [None] * len(asked)   # retrieval only
-    pools = [retrieve.search(db, q, pool, rw, bm25) for q, rw in zip(asked, rewrites)]   # sequential: embedded Qdrant is single-process, ms per query
+    routed = pmap(retrieve.route_version, asked) if versions else [None] * len(items)
+    pools = [retrieve.search(db, q, pool, rw, bm25, v) for q, rw, v in zip(asked, rewrites, routed)]   # sequential: embedded Qdrant is single-process
     rr_secs = [None] * len(items)
     if rerank:
         f = timed(lambda q, p: retrieve.rerank(q, p, model=rerank_model))
@@ -42,15 +43,21 @@ def run(items, db, k=4, pool=20, rewrite=False, rerank=False, bm25=None, condens
         # cross-encoder: one GPU model, call it sequentially; LLM rerankers are network-bound, run in threads
         out = [f(*x) for x in args] if (rerank_model or "").startswith("ce:") else pmap(lambda x: f(*x), args)
         pools, rr_secs = [o[0] for o in out], [round(o[1], 3) for o in out]
+    # version fallback: the filtered pool has no confident answer -> search all versions and rerank again
+    fell = [bool(versions and rerank and not retrieve.confident(p, k, fallback)) for p in pools]
+    redo = [i for i, f in enumerate(fell) if f]
+    for i, p in zip(redo, pmap(lambda i: retrieve.rerank(asked[i], retrieve.search(db, asked[i], pool), model=rerank_model), redo)):
+        pools[i] = p
     answers = pmap(lambda x: generate.answer(*x), [(q, h[:k]) for q, h in zip(asked, pools)])
     # the judge sees the gold standalone question, so a bad condense can't be excused by a confused judge
     oks = pmap(lambda x: generate.judge(*x), [(it.get("standalone", it["q"]), it["expected"], a) for it, (a, _) in zip(items, answers)])
     rows = []
-    for it, query, hits, (ans, model), ok, rr in zip(items, asked, pools, answers, oks, rr_secs):
+    for it, query, hits, (ans, model), ok, rr, ver, fb in zip(items, asked, pools, answers, oks, rr_secs, routed, fell):
         ev = [norm(e) for e in it["evidence"]]
         rel = [i + 1 for i, d in enumerate(hits) if any(e in norm(d.page_content) for e in ev)]
         rows.append({**it, "query": query, "rank": rel[0] if rel else None, "got": [d.metadata["source"] for d in hits[:k]],
-                     "answer": ans, "model": model, "ok": ok, "rerank_s": rr})
+                     "answer": ans, "model": model, "ok": ok, "rerank_s": rr, "routed_version": ver, "fallback": fb,
+                     "got_versions": [d.metadata.get("version", "v1") for d in hits[:k]]})
     return rows
 
 
@@ -78,6 +85,7 @@ def main():
     ap.add_argument("--hybrid", action="store_true", help="fuse BM25 with dense search (RRF)")
     ap.add_argument("--no-condense", action="store_true", help="multi-turn items: retrieve with the raw follow-up")
     ap.add_argument("--rerank-model", help='LLM name via the proxy, or "ce:<hf id>" for a cross-encoder (default: generator LLM)')
+    ap.add_argument("--versions", action="store_true", help="route the docs version, filter search to it, fall back to all versions on low confidence")
     ap.add_argument("--gate", action="store_true", help="exit 1 if below eval/thresholds.json")
     a = ap.parse_args()
 
@@ -87,7 +95,7 @@ def main():
     print(f"[{a.corpus}] ready in {time.time() - t:.0f}s")
 
     a.rerank_model = a.rerank_model or (os.environ.get("RERANK_MODEL") if a.rerank else None)   # record what actually ran
-    rows = run(load_items(a.sets), db, k=a.k, rewrite=a.rewrite, rerank=a.rerank, condense=not a.no_condense, rerank_model=a.rerank_model,
+    rows = run(load_items(a.sets), db, k=a.k, rewrite=a.rewrite, rerank=a.rerank, condense=not a.no_condense, rerank_model=a.rerank_model, versions=a.versions,
                bm25=retrieve.bm25_index(chunks) if a.hybrid else None)
     m = metrics(rows, a.k)
     for r in rows:
@@ -103,7 +111,7 @@ def main():
     if leaked:
         print(f"WARNING: gateway prompt style leaked into answers: {leaked}")
 
-    out = EVAL / "results" / f"{time.strftime('%Y%m%d-%H%M%S')}-{a.corpus}-k{a.k}{'-rw' if a.rewrite else ''}{'-hy' if a.hybrid else ''}{'-rr' if a.rerank else ''}{'-' + a.rerank_model.split('/')[-1] if a.rerank_model else ''}{'-nc' if a.no_condense else ''}.json"
+    out = EVAL / "results" / f"{time.strftime('%Y%m%d-%H%M%S')}-{a.corpus}-k{a.k}{'-rw' if a.rewrite else ''}{'-hy' if a.hybrid else ''}{'-rr' if a.rerank else ''}{'-' + a.rerank_model.split('/')[-1] if a.rerank_model else ''}{'-nc' if a.no_condense else ''}{'-ver' if a.versions else ''}.json"
     out.write_text(json.dumps({"args": vars(a), "metrics": m, "rows": rows}, indent=1))
 
     if a.gate:
