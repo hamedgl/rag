@@ -1,7 +1,7 @@
 .PHONY: eval eval-subset serve up down
 
 eval:
-	uv run python -m eval.run --corpus full --sets hard main rare multi --rerank --gate
+	uv run python -m eval.run --corpus full --sets hard main rare multi langsmith --rerank --gate
 
 eval-subset:
 	uv run python -m eval.run --corpus subset

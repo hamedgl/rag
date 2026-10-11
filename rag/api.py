@@ -45,6 +45,8 @@ class Feedback(BaseModel):
 
 
 def url(source: str) -> str:
+    if source.startswith("langsmith/"):
+        return "https://docs.langchain.com/" + source
     return "https://docs.langchain.com/oss/python/" + source.removeprefix("python/")
 
 

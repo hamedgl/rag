@@ -5,8 +5,11 @@ from pathlib import Path
 from langchain_core.documents import Document
 from langchain_text_splitters import Language, MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
-DOCS = Path(__file__).resolve().parent.parent / "data/langchain-docs/src/oss"
+SRC = Path(__file__).resolve().parent.parent / "data/langchain-docs/src"
+DOCS = SRC / "oss"          # LangChain, LangGraph, Deep Agents: sources are paths relative to here ("langchain/agents")
+LANGSMITH = SRC / "langsmith"   # LangSmith (tracing, evals, deployment, Studio, Fleet): sources "langsmith/<page>"
 FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
+SNIPPET_IMPORT = re.compile(r"""^import (\w+) from ['"](/snippets/[^'"]+\.mdx)['"];?[ \t]*$""", re.M)
 MD_SEPARATORS = RecursiveCharacterTextSplitter.get_separators_for_language(Language.MARKDOWN)
 
 # Phase 1 subset, kept to compare small vs full corpus on the same eval set
@@ -22,21 +25,35 @@ SUBSET = [
 ]
 
 
+def inline_snippets(text: str, depth: int = 0) -> str:
+    """Replace <Name /> with the body of the snippet `Name` was imported from. Pages share content through snippets
+    (788 imports in oss alone); without this, the cleaner drops the import and that content never gets indexed."""
+    if depth > 3:   # snippets import snippets; cap against cycles
+        return text
+    for name, path in SNIPPET_IMPORT.findall(text):
+        f = SRC / path.lstrip("/")
+        if f.exists():
+            body = inline_snippets(FRONTMATTER.sub("", f.read_text(), count=1), depth + 1)
+            text = re.sub(rf"<{name}(?:\s[^>]*)?/>", lambda m: body, text)
+    return text
+
+
 def load(path: Path) -> Document:
     raw = path.read_text()
     fm = FRONTMATTER.match(raw)
     title = re.search(r"^title:\s*(.+)$", fm.group(1), re.M) if fm else None
-    rel = str(path.relative_to(DOCS).with_suffix(""))
-    return Document(page_content=raw[fm.end():] if fm else raw,
+    rel = str(path.relative_to(DOCS) if path.is_relative_to(DOCS) else Path("langsmith") / path.relative_to(LANGSMITH)).removesuffix(".mdx")
+    raw = inline_snippets(raw[fm.end():] if fm else raw)
+    return Document(page_content=raw,
                     metadata={"source": rel, "title": title.group(1).strip('"') if title else rel})
 
 
 def pages(subset: list[str] | None = None) -> list[Document]:
-    """All pages except the JS duplicates, or only `subset`."""
+    """All oss pages except the JS duplicates, plus LangSmith; or only `subset` (oss)."""
     if subset:
         paths = [DOCS / f"{s}.mdx" for s in subset]
     else:
-        paths = sorted(p for p in DOCS.rglob("*.mdx") if "javascript" not in p.relative_to(DOCS).parts)
+        paths = sorted(p for p in DOCS.rglob("*.mdx") if "javascript" not in p.relative_to(DOCS).parts) + sorted(LANGSMITH.rglob("*.mdx"))
     return [load(p) for p in paths]
 
 
