@@ -416,3 +416,15 @@ Laya = open-weights (Apache 2.0) Jev clone, ModernBERT-large 421M, serves the sa
 - Laya's own card: "a fast base to specialise, not a zero-shot decision engine" (0.362 zero-shot on typed decisions). Server warned the checkpoint ships invalid choice temperatures → uncalibrated.
 - Latency: 0.03–0.47 s for a single 3-passage call, but 1.5 s mean under the eval's parallel threads (one local GPU, 20 passages + 20 nouls per request). Jev is faster AND better.
 - Decision: keep jev:choice. Laya only worth revisiting fine-tuned on our labels (eval pools give ~100 questions × 20 passages of graded pairs).
+
+## Jev cost cut: nouls only for the top 4 (2026-10-11)
+Measured Jev usage (5 hard Qs): the rerank request sent every passage TWICE (choice options + 20 nouls). Nouls = 53% of input, 65% of output, but confident() reads only the top 4.
+Now: choice call → noul call on its top 4 (2 sequential requests).
+| | input tokens (5 Qs) | output tokens | rerank latency |
+|---|---|---|---|
+| choice + 20 noul (one request) | 30,341 | 2,561 | 0.26–0.29 s |
+| choice, then 4 noul | 19,747 (−35%) | 1,259 (−51%) | 0.55–0.58 s mean, p95 0.69–0.83 s |
+- Gate, 2 runs (98 items): hit@4 0.966 / 0.966, MRR 0.934 / 0.938, answers 0.918 / 0.929, declines 0.889. Baseline 0.955 / 0.926 / 0.908 / 0.889: same or better, within noise. Fallbacks: same 9 items (+a2 once).
+- Saving below the predicted −42% input: each noul repeats the state, and the top 4 tend to be the longer passages.
+- Trade: +~0.3 s time to first token (~1.3 → ~1.6 s) for ~40% off the rerank bill.
+- Next lever (not done): pool 20 → 10–15, cost linear in pool size; needs 2 gate runs per size.

@@ -98,24 +98,25 @@ def _jev(state: str, questions: dict, api: str = "jev") -> dict:
     return r.json()["answers"]
 
 
-def _jev_scores(question: str, docs, style: str, api: str = "jev") -> list[float]:
+def _jev_scores(question: str, docs, style: str, api: str = "jev", checked: int = 4) -> list[float]:
     """noul: one yes/no per passage (pointwise), all in one request. choice: one pick over all passages (listwise distribution)."""
     state = f"A user asked the LangChain documentation: {question}"
     if style == "noul":
         ans = _jev(state, {f"p{i}": {"type": "noul", "instructions": f"Does this passage {JEV_ASK}?\n\nPassage:\n{d.page_content}"}
                            for i, d in enumerate(docs)}, api)
         return [ans[f"p{i}"]["noul"] for i in range(len(docs))]
-    # choice ranks, but its probabilities sum to 1 over the pool, so it can't say "none of these answer". The same
-    # request also asks one noul per passage: an absolute P(answers), used for the version fallback. Jev evaluates all
-    # questions in parallel, so this adds tokens, not latency.
-    ans = _jev(state, {"c": {"type": "choice", "instructions": f"Which passage does {JEV_ASK}?",
-                             "criteria": {f"p{i}": d.page_content for i, d in enumerate(docs)}},
-                       **{f"a{i}": {"type": "noul", "instructions": f"Does this passage {JEV_ASK}?\n\nPassage:\n{d.page_content}"}
-                          for i, d in enumerate(docs)}}, api)
-    for i, d in enumerate(docs):
-        d.metadata["answers_p"] = ans[f"a{i}"]["noul"]
-    probs = ans["c"]["probabilities"]
-    return [probs.get(f"p{i}", 0.0) for i in range(len(docs))]
+    # choice ranks, but its probabilities sum to 1 over the pool, so it can't say "none of these answer". A second
+    # request asks one noul per passage of the new top `checked`: an absolute P(answers), read by confident() for the
+    # version fallback. Was one request with 20 nouls: same latency, but ~2x the tokens, 16 of the nouls never read.
+    probs = _jev(state, {"c": {"type": "choice", "instructions": f"Which passage does {JEV_ASK}?",
+                               "criteria": {f"p{i}": d.page_content for i, d in enumerate(docs)}}}, api)["c"]["probabilities"]
+    scores = [probs.get(f"p{i}", 0.0) for i in range(len(docs))]
+    top = sorted(range(len(docs)), key=lambda i: -scores[i])[:checked]   # same stable order rerank() applies
+    ans = _jev(state, {f"a{i}": {"type": "noul", "instructions": f"Does this passage {JEV_ASK}?\n\nPassage:\n{docs[i].page_content}"}
+                       for i in top}, api)
+    for i in top:
+        docs[i].metadata["answers_p"] = ans[f"a{i}"]["noul"]
+    return scores
 
 
 def rerank(question: str, docs, top: int = 5, model: str | None = None):
