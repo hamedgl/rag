@@ -13,6 +13,7 @@ def _chat(model: str) -> ChatOpenAI:
 
 llm = _chat(os.environ["LLM_MODEL"])
 judge_llm = _chat(os.environ.get("JUDGE_MODEL", os.environ["LLM_MODEL"]))   # keep the grader fixed when swapping the generator
+condense_llm = _chat(os.environ.get("CONDENSE_MODEL", os.environ["LLM_MODEL"]))   # condense feeds retrieval: pin it to A/B generators fairly
 
 SYSTEM = """You answer questions about LangChain using ONLY the context below.
 Rules:
@@ -64,7 +65,7 @@ Reply with the question only.
 Conversation:
 {history}
 
-Last message: {question}""")]) | llm | StrOutputParser()
+Last message: {question}""")]) | condense_llm | StrOutputParser()
 
 
 def _strip(text: str) -> str:

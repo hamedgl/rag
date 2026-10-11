@@ -428,3 +428,53 @@ Now: choice call → noul call on its top 4 (2 sequential requests).
 - Saving below the predicted −42% input: each noul repeats the state, and the top 4 tend to be the longer passages.
 - Trade: +~0.3 s time to first token (~1.3 → ~1.6 s) for ~40% off the rerank bill.
 - Next lever (not done): pool 20 → 10–15, cost linear in pool size; needs 2 gate runs per size.
+
+## Generator switch: cc/claude-haiku-5-5 (2026-10-11)
+`LLM_MODEL=cc/claude-haiku-5-5` in .env (was kaflama = gpt-oss-120b). Used for condense + answer; rerank stays Jev, judge stays gemini-3.8-flash-low (not self-grading this time).
+| | gpt-oss (2 runs, after the Jev cost cut) | haiku-5-5 (2 runs) |
+|---|---|---|
+| hit@4 / MRR | 0.966 / 0.934–0.938 | 0.966 / 0.939–0.943 |
+| answers | 0.918 / 0.929 | 0.929 / 0.939 |
+| declines | 0.889 | 0.889 |
+| first token / total (10 hard Qs, same context, sequential, alternating) | 1.68 / 2.52 s | 1.19 / 1.87 s |
+| answer length (median chars) | 276 | 466 |
+- Failing in both runs: the same 5 for both (a1, d17, d19, h2, h8 = known retrieval/label problems), plus l1 for Haiku (flips on gpt-oss). No item fixed or broken by the switch: within noise on quality.
+- gpt-oss latency today is slower than in P3.5 (1.04 / 1.35 s): proxy load varies, so compare only the alternating runs.
+- Proxy hidden prompt still applies (~2,040 input tokens on a "Say hi" call).
+- Decision: Haiku is the generator. Gains: ~0.5 s faster first token, at least equal quality. Cost: answers ~1.7× longer (more output tokens).
+
+## Generator A/B: + cx/gpt-6-luna, with cost (2026-10-11)
+Luna via `LLM_MODEL=cx/gpt-6-luna make eval` (env override, .env untouched), 2 runs.
+| | gpt-oss-120b | haiku-5-5 | gpt-6-luna |
+|---|---|---|---|
+| hit@4 | 0.966 / 0.966 | 0.966 / 0.966 | 0.955 / 0.955 |
+| answers | 0.918 / 0.929 | 0.929 / 0.939 | 0.908 / 0.908 |
+| fail in both runs | a1 d17 d19 h2 h8 | + l1 | d17 h2 h8 l1 + m4 r1 v4 |
+| first token / total (10 hard Qs, alternating, one session) | 1.35 / 4.05 s | 1.34 / 3.91 s | 1.19 / 3.20 s |
+| output tokens median / max | 192 / 359 | 334 / 667 | 48 / 223 |
+| list price $/1M in / out | 0.09 / 0.45 | 0.10 / 0.50 (≤100K prompt) | 0.10 / 0.50 |
+| est. $/answer (our ~650-token prompt + median output) | ~$0.00015 | ~$0.00023 | ~$0.00009 |
+- Prices: Haiku from Anthropic's table; Luna and gpt-oss from third-party trackers citing OpenAI (unverified; gpt-oss hosts go down to $0.037 / $0.10). Per-token prices are ~equal, so cost = tokens: Luna's terse answers make it cheapest, Haiku's long ones the most expensive (~2.6× Luna).
+- Proxy input counts are NOT usable for cost: Haiku reported more tokens for an empty context (2,486) than a real one (2,031); Luna 339 here vs 2,495 on "Say hi" earlier. Caching or a variable hidden prompt. Estimates use our own prompt size.
+- Absolute scale: all three are $0.09–0.23 per 1,000 answers, the same order as the Jev rerank after the cost cut. Condense adds a small call per follow-up turn.
+- Luna quality: answers 0.908 twice (−2–3 items vs Haiku), and hit@4 0.955 (condense also runs on the generator). New failures: m4 (vocabulary gap, flips for gpt-oss), r1 (correct gist but terse, judge marked wrong). Output may exclude hidden reasoning tokens; unverified through the proxy.
+- Latency this session is slower for all three than the earlier probe (proxy load); Luna fastest total because it writes least.
+- Decision: keep Haiku (best answers in both runs). Luna is the cost pick if ~2 points of answer accuracy is acceptable; gpt-oss sits between on cost with Haiku-like accuracy on run 2.
+  - CORRECTED below (CONDENSE_MODEL): with 6 Luna runs the answer gap is within noise.
+
+## CONDENSE_MODEL: pin the follow-up rewriter (2026-10-11)
+Why: hit@4/MRR moved when only the generator changed. Condense (multi-turn follow-up → standalone search query) ran on LLM_MODEL, so the generator was writing the retrieval query. `CONDENSE_MODEL` (default LLM_MODEL), like JUDGE_MODEL.
+Luna answers × condense model, 2 runs each:
+| generator / condense | hit@4 | MRR | answers | m4 rank |
+|---|---|---|---|---|
+| gpt-oss / gpt-oss | 0.966 / 0.966 | 0.934 / 0.938 | 0.918 / 0.929 | 1 / 1 |
+| haiku / haiku | 0.966 / 0.966 | 0.939 / 0.943 | 0.929 / 0.939 | 1 / 1 |
+| luna / luna | 0.955 / 0.955 | 0.932 / 0.913 | 0.908 / 0.908 | None / None |
+| luna / haiku | 0.955 / 0.955 | 0.923 / 0.919 | 0.939 / 0.908 | None / None |
+| luna / gpt-oss | 0.966 / 0.966 | 0.935 / 0.928 | 0.898 / 0.939 | 1 / 1 |
+- EVERY hit@4 difference in this table is ONE item: m4 (0.966 vs 0.955 = 1/91). The other 6 multi-turn items hit in all 10 runs.
+- m4 is on a knife edge: Haiku condensing for itself → rank 1 twice; the SAME Haiku condensing in the Luna runs → None twice. The rewrites differ ("…rather than stream_mode="updates", which emits an event after each agent step" → hit; "…instead of receiving updates…" → miss). Temperature 0 doesn't make the proxy models deterministic, and this item flips on wording. gpt-oss's short "How can I stream the generated text word by word…" hit 4/4.
+- Answer accuracy swings ±4 items within one config (luna/gpt-oss: 0.898 vs 0.939). Luna over 6 runs: mean 0.917 (0.898–0.939); haiku 0.934 (2 runs); gpt-oss 0.924 (2 runs). The earlier "Luna −2–3 items" was 2 runs inside the noise: NOT a real gap.
+- Lessons: (1) 2 runs can't separate generators within ~3 points here; the gate's answer noise is ~±0.02. (2) Pin every LLM step that feeds retrieval before A/B'ing a generator. (3) m4 needs a retrieval fix (vocabulary gap), not a model choice.
+- Cheapest config with no measured loss: LLM_MODEL=cx/gpt-6-luna + CONDENSE_MODEL=kaflama.
+- DECISION (2026-10-11): switched to it. ~$0.00009/answer vs Haiku ~$0.00023 (~2.6× cheaper), first token ~1.2 s. Watch: Luna's terse answers (r1 marked wrong once for missing detail); output tokens may exclude hidden reasoning (unverified via proxy).

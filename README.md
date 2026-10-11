@@ -8,7 +8,7 @@ Decisions, results and gotchas live in [PLAN.md](PLAN.md).
 
 ```
 docs (MDX, snippets inlined) → clean + header-aware chunking → EmbeddingGemma 2 (CUDA) → Qdrant
-question → [condense follow-up] → dense top 20 → rerank (TypeSafe Jev) → top 4 → grounded answer with [source] citations
+question → [condense follow-up: gpt-oss] → route version (Jev) → dense top 20 → rerank (TypeSafe Jev) → top 4 → grounded answer (GPT-6 Luna) with [source] citations
 ```
 
 | Path | What |
@@ -45,8 +45,9 @@ Create `.env`:
 EMBED_MODEL=google/embeddinggemma-2
 LLM_BASE_URL=http://localhost:.../v1
 LLM_API_KEY=...
-LLM_MODEL=...
+LLM_MODEL=...            # generator; current: cx/gpt-6-luna (cheapest with no measured loss, see PLAN.md)
 JUDGE_MODEL=...          # optional; defaults to LLM_MODEL. Pin it so swapping the generator doesn't move the grader
+CONDENSE_MODEL=...       # optional; defaults to LLM_MODEL. Rewrites follow-ups into the search query, so it moves retrieval; current: kaflama
 RERANK_MODEL=jev:choice  # or jev:noul, ce:<hf id>, an LLM name; unset = generator LLM
 JEV_API=...              # TypeSafe key, for jev:* rerankers
 QDRANT_URL=http://localhost:6333
